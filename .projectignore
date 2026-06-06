@@ -1,0 +1,20 @@
+# qq-hermes project ignore
+# Used by humans/agents when auditing this directory; this project is not necessarily a git repo.
+
+.env
+venv/
+.venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+logs/
+napcat-login/
+napcat-data/
+NapCatQQ/
+NapCat-Docker/
+napcat-shell/
+NapCat.Shell.zip
+*.migrated.bak
+archive/

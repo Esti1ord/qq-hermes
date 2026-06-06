@@ -1,0 +1,42 @@
+# Runtime secrets / local config
+.env
+.env.*
+!.env.example
+*.local
+
+# Private prompts / group profiles / local knowledge
+base_persona.md
+groups/
+
+# Python runtime/cache
+venv/
+.venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Bridge runtime data
+logs/
+data
+jrrp_results.json
+napcat-login/
+napcat-qrcode.png
+
+# NapCat / QQ runtime state (contains login state, DBs, logs, cache)
+napcat-data/
+napcat-data-backup-*/
+
+# Third-party adapter sources/build artifacts kept outside source control
+NapCatQQ/
+NapCat-Docker/
+napcat-shell/
+NapCat.Shell.zip
+
+# Local backups / archives / agent scratch
+backups/
+*.migrated.bak
+archive/
+.hermes/
+.claude/worktrees/
