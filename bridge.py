@@ -26,7 +26,7 @@ import httpx
 from fastapi import FastAPI, HTTPException, Request
 from pydantic import BaseModel
 
-from qq_hermes_bridge import app_helpers, command_utils, commands, config_utils, content_analysis_log as analysis_log_utils, context_store, events, group_files, handlers, hermes_runtime, jrrp, logging_utils, matching, media, media_fetch, model_output, onebot, outbound, proactive, profiles, reply_processing, reply_queue, runtime_stats, search, search_runtime, text_utils, user_controls, vision
+from qq_hermes_bridge import app_helpers, command_utils, commands, config_utils, content_analysis_log as analysis_log_utils, context_store, events, group_files, handlers, hermes_runtime, jrrp, logging_utils, matching, media, media_fetch, model_output, onebot, outbound, proactive, profiles, reply_processing, reply_queue, runtime_stats, search, search_runtime, self_learning, text_utils, user_controls, vision
 
 BASE_DIR = Path(__file__).resolve().parent
 LOG_DIR = BASE_DIR / "logs"
@@ -127,6 +127,30 @@ OCR_CONTEXT_GROUP_IDS = analysis_log_utils.parse_group_ids(os.getenv("OCR_CONTEX
 OCR_MAX_CONCURRENT_TASKS = max(1, int(os.getenv("OCR_MAX_CONCURRENT_TASKS", "2")))
 OCR_CACHE_TTL_SECONDS = max(0.0, float(os.getenv("OCR_CACHE_TTL_SECONDS", "3600")))
 OCR_CACHE_MAX_ENTRIES = max(0, int(os.getenv("OCR_CACHE_MAX_ENTRIES", "512")))
+SELF_LEARNING_ENABLED = config_utils.parse_bool(os.getenv("SELF_LEARNING_ENABLED", "false"))
+SELF_LEARNING_COLLECT_ENABLED = config_utils.parse_bool(os.getenv("SELF_LEARNING_COLLECT_ENABLED", "true" if SELF_LEARNING_ENABLED else "false"))
+SELF_LEARNING_INJECT_ENABLED = config_utils.parse_bool(os.getenv("SELF_LEARNING_INJECT_ENABLED", "true" if SELF_LEARNING_ENABLED else "false"))
+SELF_LEARNING_ALLOWED_GROUP_IDS = analysis_log_utils.parse_group_ids(os.getenv("SELF_LEARNING_ALLOWED_GROUP_IDS", ""))
+SELF_LEARNING_MIN_MESSAGE_CHARS = int(os.getenv("SELF_LEARNING_MIN_MESSAGE_CHARS", "2"))
+SELF_LEARNING_MAX_MESSAGE_CHARS = int(os.getenv("SELF_LEARNING_MAX_MESSAGE_CHARS", "300"))
+SELF_LEARNING_MAX_SAMPLES_PER_GROUP = int(os.getenv("SELF_LEARNING_MAX_SAMPLES_PER_GROUP", "500"))
+SELF_LEARNING_RETENTION_DAYS = int(os.getenv("SELF_LEARNING_RETENTION_DAYS", "30"))
+SELF_LEARNING_MAX_PROMPT_CHARS = int(os.getenv("SELF_LEARNING_MAX_PROMPT_CHARS", "500"))
+SELF_LEARNING_MIN_COUNT_FOR_PROMPT = int(os.getenv("SELF_LEARNING_MIN_COUNT_FOR_PROMPT", "3"))
+SELF_LEARNING_DATA_FILENAME = os.getenv("SELF_LEARNING_DATA_FILENAME", "self_learning.json").strip() or "self_learning.json"
+SELF_LEARNING_CONFIG = self_learning.SelfLearningConfig(
+    enabled=SELF_LEARNING_ENABLED,
+    collect_enabled=SELF_LEARNING_COLLECT_ENABLED,
+    inject_enabled=SELF_LEARNING_INJECT_ENABLED,
+    allowed_group_ids=SELF_LEARNING_ALLOWED_GROUP_IDS,
+    min_message_chars=SELF_LEARNING_MIN_MESSAGE_CHARS,
+    max_message_chars=SELF_LEARNING_MAX_MESSAGE_CHARS,
+    max_samples_per_group=SELF_LEARNING_MAX_SAMPLES_PER_GROUP,
+    retention_days=SELF_LEARNING_RETENTION_DAYS,
+    max_prompt_chars=SELF_LEARNING_MAX_PROMPT_CHARS,
+    min_count_for_prompt=SELF_LEARNING_MIN_COUNT_FOR_PROMPT,
+    data_filename=SELF_LEARNING_DATA_FILENAME,
+)
 CONTENT_ANALYSIS_LOG_ENABLED = analysis_log_utils.enabled_from_env(os.getenv("CONTENT_ANALYSIS_LOG_ENABLED", "false"))
 CONTENT_ANALYSIS_LOG_FILE = Path(os.getenv("CONTENT_ANALYSIS_LOG_FILE", str(LOG_DIR / "content_analysis.jsonl")))
 CONTENT_ANALYSIS_ALLOWED_GROUP_IDS = analysis_log_utils.parse_group_ids(os.getenv("CONTENT_ANALYSIS_ALLOWED_GROUP_IDS", ""))
@@ -817,6 +841,7 @@ def save_context_cache() -> None:
                     row["text"] = row.get("text_without_ocr") or row.get("text")
                 row.pop("text_without_ocr", None)
                 row.pop("ocr_text_nonpersistent", None)
+                row.pop("media_refs", None)
                 row["kind"] = "recent"
                 row["group_id"] = group_id
                 f.write(json.dumps(row, ensure_ascii=False) + "\n")
@@ -1344,6 +1369,26 @@ def mark_repeated_bot_wording_for_human_message(group_id: int | None, item: dict
         item["annotation"] = "疑似复读/引用 Esti 旧回复，不一定是新事实或新主体"
 
 
+def collect_self_learning_sample_for_item(group_id: int, item: dict[str, Any]) -> None:
+    learning_text = item.get("text_without_ocr") or item.get("text") or ""
+    text_for_command_check = str(learning_text or "")
+    is_command = (
+        is_context_command(text_for_command_check)
+        or is_search_command(text_for_command_check)
+        or is_deepseek_command(text_for_command_check)
+        or is_jrrp_command(text_for_command_check)
+    )
+    self_learning.collect_learning_sample(
+        group_id,
+        learning_text,
+        group_config_dir=GROUP_CONFIG_DIR,
+        config=SELF_LEARNING_CONFIG,
+        is_bot=False,
+        is_command=is_command,
+        on_error=lambda exc: log({"type": "self_learning_collect_error", "error": type(exc).__name__}),
+    )
+
+
 def remember_message(event: dict[str, Any], text_override: str | None = None, *, text_without_ocr: str | None = None, ocr_text_nonpersistent: bool = False) -> dict[str, Any] | None:
     """记录允许群最近消息，供被 @ 时作为上下文。"""
     if event.get("post_type") != "message" or event.get("message_type") != "group":
@@ -1362,6 +1407,9 @@ def remember_message(event: dict[str, Any], text_override: str | None = None, *,
         "name": _sender_name(event),
         "text": text,
     }
+    media_refs = media.extract_media_refs(event.get("message"), max_refs=OCR_MAX_IMAGES_PER_MESSAGE)
+    if media_refs:
+        item["media_refs"] = media_refs
     if text_without_ocr is not None:
         item["text_without_ocr"] = text_without_ocr[:CONTEXT_MAX_CHARS_PER_MESSAGE]
     if ocr_text_nonpersistent:
@@ -1370,6 +1418,7 @@ def remember_message(event: dict[str, Any], text_override: str | None = None, *,
         item[key] = value
     mark_repeated_bot_wording_for_human_message(group_id, item)
     remember_message_item(group_id, item)
+    collect_self_learning_sample_for_item(group_id, item)
     return item
 
 
@@ -1637,6 +1686,16 @@ def is_at_me(event: dict[str, Any]) -> bool:
     return onebot.is_at_me(event, bot_qq=BOT_QQ)
 
 
+def self_learning_context_for_prompt(group_id: int | None = None) -> str:
+    return self_learning.learning_context_for_prompt(
+        group_id,
+        target_group_id=TARGET_GROUP_ID,
+        group_config_dir=GROUP_CONFIG_DIR,
+        config=SELF_LEARNING_CONFIG,
+        on_error=lambda exc: log({"type": "self_learning_prompt_error", "error": type(exc).__name__}),
+    )
+
+
 def build_prompt(event: dict[str, Any], user_text: str, media_context: str = "（当前消息没有图片识别结果）") -> str:
     nick = _sender_name(event)
     user_id = event.get("user_id")
@@ -1661,6 +1720,7 @@ def build_prompt(event: dict[str, Any], user_text: str, media_context: str = "�
         max_prompt_chars=MAX_PROMPT_CHARS,
         style_hint=style_hint_for(event),
         media_context=media_context,
+        learning_context=self_learning_context_for_prompt(group_id),
     )
 
 def build_proactive_prompt(event: dict[str, Any], reasons: list[str]) -> str:
@@ -1848,9 +1908,82 @@ async def fetch_and_recognize_one_media_cached(ref: media.MediaRef, provider: vi
         _ocr_inflight.pop(key, None)
 
 
+def reindex_media_ref(ref: media.MediaRef, index: int) -> media.MediaRef:
+    if ref.index == index:
+        return ref
+    return media.MediaRef(
+        index=index,
+        type=ref.type,
+        file_id=ref.file_id,
+        url=ref.url,
+        summary=ref.summary,
+        sub_type=ref.sub_type,
+        raw_keys=ref.raw_keys,
+    )
+
+
+def media_ref_identity(ref: media.MediaRef) -> tuple[str, str, str, str, str]:
+    return (ref.type, ref.file_id, ref.url, ref.summary, ref.sub_type)
+
+
+def reply_media_messages_from_data(data: dict[str, Any]) -> list[Any]:
+    messages: list[Any] = []
+    for key in ("message", "content", "text", "raw_message"):
+        value = data.get(key)
+        if value not in (None, ""):
+            messages.append(value)
+    for key in ("source", "origin", "reply"):
+        value = data.get(key)
+        if isinstance(value, dict):
+            for nested_key in ("message", "content", "text", "raw_message"):
+                nested = value.get(nested_key)
+                if nested not in (None, ""):
+                    messages.append(nested)
+    return messages
+
+
+def media_refs_for_event(event: dict[str, Any], *, max_refs: int, include_reply_media: bool = False) -> list[media.MediaRef]:
+    refs: list[media.MediaRef] = []
+    seen: set[tuple[str, str, str, str, str]] = set()
+
+    def append_many(candidates: list[media.MediaRef]) -> None:
+        for ref in candidates:
+            if len(refs) >= max_refs:
+                return
+            key = media_ref_identity(ref)
+            if key in seen:
+                continue
+            seen.add(key)
+            refs.append(reindex_media_ref(ref, len(refs)))
+
+    append_many(media.extract_media_refs(event.get("message"), max_refs=max_refs))
+    if not include_reply_media or len(refs) >= max_refs:
+        return refs
+
+    group_id = group_id_from_event(event)
+    for seg in reply_segments(event):
+        if len(refs) >= max_refs:
+            break
+        data = seg.get("data") or {}
+        if not isinstance(data, dict):
+            continue
+        for message in reply_media_messages_from_data(data):
+            if len(refs) >= max_refs:
+                break
+            append_many(media.extract_media_refs(message, max_refs=max_refs - len(refs)))
+        if len(refs) >= max_refs:
+            break
+        mid = reply_segment_message_id(data)
+        cached = recent_message_by_id(group_id, mid) if mid else None
+        cached_refs = cached.get("media_refs") if isinstance(cached, dict) else None
+        if isinstance(cached_refs, list):
+            append_many([ref for ref in cached_refs if isinstance(ref, media.MediaRef)])
+    return refs
+
+
 async def recognize_media_for_event(event: dict[str, Any], *, route: str, include_failures: bool = True) -> dict[str, Any]:
     start = runtime_now()
-    refs = media.extract_media_refs(event.get("message"), max_refs=OCR_MAX_IMAGES_PER_MESSAGE)
+    refs = media_refs_for_event(event, max_refs=OCR_MAX_IMAGES_PER_MESSAGE, include_reply_media=(route == "direct"))
     if not refs:
         emit_perf_stat("ocr_route_result", route=route, group_id=event.get("group_id"), media_count=0, ok_count=0, error_count=0, skipped_count=0, duration_ms=runtime_elapsed_ms(start), enabled=ocr_enabled_for_route(route))
         return {"refs": [], "results": [], "media_context": "（当前消息没有图片识别结果）"}

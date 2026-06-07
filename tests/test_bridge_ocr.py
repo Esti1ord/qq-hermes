@@ -111,7 +111,7 @@ def test_direct_image_message_adds_ocr_to_prompt_and_context(monkeypatch):
 
     assert result["queued"] is True
     assert sent == [(975805598, "[CQ:reply,id=901]识图回复")]
-    assert "当前消息的图片识别结果" in prompts[0]
+    assert "当前消息或被回复/引用消息的图片识别结果" in prompts[0]
     assert "午饭米饭250g" in prompts[0]
     recent = list(bridge.recent_messages_for_group(975805598))
     human = recent[0]
@@ -199,6 +199,157 @@ def make_image_context_event(message_id=1001, group_id=975805598, url="https://c
             {"type": "image", "data": {"file": "context.png", "url": url}},
         ],
     }
+
+
+def make_reply_to_image_name_event(message_id=1002, reply_to=1001, text="Esti 帮我看下这张图"):
+    return {
+        "post_type": "message",
+        "message_type": "group",
+        "group_id": 975805598,
+        "user_id": 333,
+        "self_id": 3975680980,
+        "message_id": message_id,
+        "sender": {"nickname": "提问者"},
+        "message": [
+            {"type": "reply", "data": {"message_id": str(reply_to)}},
+            {"type": "text", "data": {"text": text}},
+        ],
+    }
+
+
+def make_embedded_reply_image_event(message_id=1003):
+    return {
+        "post_type": "message",
+        "message_type": "group",
+        "group_id": 975805598,
+        "user_id": 333,
+        "self_id": 3975680980,
+        "message_id": message_id,
+        "sender": {"nickname": "提问者"},
+        "message": [
+            {
+                "type": "reply",
+                "data": {
+                    "message_id": "quoted-1",
+                    "message": [
+                        {"type": "image", "data": {"file": "quoted.png", "url": "https://cdn.example.test/quoted.png"}}
+                    ],
+                },
+            },
+            {"type": "text", "data": {"text": "小E 看看"}},
+        ],
+    }
+
+
+def test_name_reply_to_cached_image_triggers_direct_ocr(monkeypatch):
+    bridge = load_bridge_module()
+    configure_bridge(bridge)
+    prompts = []
+    sent = []
+    calls = []
+
+    async def fake_fetch(ref, **kwargs):
+        calls.append(ref)
+        return media_fetch.MediaFetchResult(
+            ref=ref,
+            status="ok",
+            content=b"image",
+            content_type="image/png",
+            source_host="cdn.example.test",
+            status_code=200,
+        )
+
+    monkeypatch.setattr(bridge.media_fetch, "fetch_onebot_image", fake_fetch)
+    monkeypatch.setattr(bridge, "build_ocr_provider", lambda: vision.MockVisionProvider(text="被回复图片OCR", description="被回复图片描述"))
+
+    def fake_run_hermes_raw(prompt, group_id=None, use_group_session=True):
+        prompts.append(prompt)
+        return "引用识图回复"
+
+    async def fake_send(group_id, message):
+        sent.append((group_id, message))
+        return {"ok": True}
+
+    monkeypatch.setattr(bridge, "run_hermes_raw", fake_run_hermes_raw)
+    monkeypatch.setattr(bridge, "send_group_msg", fake_send)
+
+    async def run():
+        first = await bridge.onebot_event(FakeRequest(make_image_context_event(message_id=1001, url="https://cdn.example.test/cached.png")))
+        second = await bridge.onebot_event(FakeRequest(make_reply_to_image_name_event(message_id=1002, reply_to=1001)))
+        await bridge.wait_reply_worker(975805598)
+        return first, second
+
+    first, second = asyncio.run(run())
+
+    assert first["ignored"] == "not_at_me"
+    assert second["queued"] is True
+    assert len(calls) == 1
+    assert calls[0].url == "https://cdn.example.test/cached.png"
+    assert "被回复图片OCR" in prompts[0]
+    assert sent == [(975805598, "[CQ:reply,id=1002]引用识图回复")]
+    recent = list(bridge.recent_messages_for_group(975805598))
+    assert "media_refs" in recent[0]
+    assert "被回复图片OCR" in recent[-2]["text"]
+
+
+def test_direct_ocr_reads_embedded_reply_image_without_recent_cache(monkeypatch):
+    bridge = load_bridge_module()
+    configure_bridge(bridge)
+    calls = []
+
+    async def fake_fetch(ref, **kwargs):
+        calls.append(ref)
+        return media_fetch.MediaFetchResult(ref=ref, status="ok", content=b"image", content_type="image/png")
+
+    monkeypatch.setattr(bridge.media_fetch, "fetch_onebot_image", fake_fetch)
+    monkeypatch.setattr(bridge, "build_ocr_provider", lambda: vision.MockVisionProvider(text="内嵌引用OCR"))
+
+    result = asyncio.run(bridge.recognize_media_for_event(make_embedded_reply_image_event(), route="direct"))
+
+    assert len(calls) == 1
+    assert calls[0].url == "https://cdn.example.test/quoted.png"
+    assert result["results"][0].status == "ok"
+    assert "内嵌引用OCR" in result["media_context"]
+
+
+def test_non_direct_reply_to_image_does_not_ocr_quoted_image(monkeypatch):
+    bridge = load_bridge_module()
+    configure_bridge(bridge)
+    calls = []
+
+    async def fake_fetch(ref, **kwargs):
+        calls.append(ref)
+        return media_fetch.MediaFetchResult(ref=ref, status="ok", content=b"image", content_type="image/png")
+
+    monkeypatch.setattr(bridge.media_fetch, "fetch_onebot_image", fake_fetch)
+    monkeypatch.setattr(bridge, "build_ocr_provider", lambda: vision.MockVisionProvider(text="不应出现"))
+
+    async def run():
+        await bridge.onebot_event(FakeRequest(make_image_context_event(message_id=1101, url="https://cdn.example.test/non-direct.png")))
+        result = await bridge.onebot_event(FakeRequest(make_reply_to_image_name_event(message_id=1102, reply_to=1101, text="看看这张")))
+        await bridge.wait_ocr_context_tasks(975805598)
+        return result
+
+    result = asyncio.run(run())
+
+    assert result["ignored"] == "not_at_me"
+    assert calls == []
+
+
+def test_context_persistence_strips_runtime_media_refs(tmp_path):
+    bridge = load_bridge_module()
+    configure_bridge(bridge)
+    bridge.CONTEXT_PERSIST_ENABLED = True
+    bridge.CONTEXT_CACHE_FILE = tmp_path / "recent_context.jsonl"
+
+    bridge.remember_message(make_image_context_event(message_id=1201, url="https://cdn.example.test/private.png"))
+
+    human = list(bridge.recent_messages_for_group(975805598))[0]
+    assert human["media_refs"][0].url == "https://cdn.example.test/private.png"
+    saved = bridge.CONTEXT_CACHE_FILE.read_text(encoding="utf-8")
+    assert "media_refs" not in saved
+    assert "https://cdn.example.test/private.png" not in saved
+    assert "context.png" not in saved
 
 
 def test_non_direct_image_message_adds_ocr_to_group_context_async(monkeypatch):

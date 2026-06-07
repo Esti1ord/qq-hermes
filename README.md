@@ -72,6 +72,7 @@ qq-hermes/
 │   ├── vision.py              # OCR/图片理解 provider
 │   ├── search.py              # 搜索命令辅助
 │   ├── runtime_stats.py       # 内容安全运行统计
+│   ├── self_learning.py       # 群内用语/风格自学习提示
 │   ├── outbound.py            # OneBot 发消息、reply、去重
 │   └── proactive.py           # 主动发言评分和限制
 ├── scripts/                   # 运维脚本
@@ -255,7 +256,8 @@ DEEPSEEK_COMMAND_MODEL=deepseek-v4-flash
 groups/<group_id>/
 ├── persona.md
 ├── people.md
-└── knowledge.md
+├── knowledge.md
+└── self_learning.json          # 可选，启用 self-learning 后生成
 ```
 
 这些文件的用途：
@@ -263,6 +265,7 @@ groups/<group_id>/
 - `persona.md`：本群风格、口癖、边界和行为偏好；
 - `people.md`：群友昵称、梗、关系、背景资料；
 - `knowledge.md`：稳定知识、可信资料、长期参考信息；
+- `self_learning.json`：可选的本群用语/风格样本文件，启用 self-learning 后由 bridge 自动维护；
 - 最近上下文和摘要：由 bridge 在本地运行时维护；
 - Hermes session：`qq-group-<group_id>`。
 
@@ -302,6 +305,49 @@ scripts/sync_people_<group_id>_from_qqdocs.sh
 ```
 
 同步脚本会读取本机 Firefox 的腾讯文档登录 cookie。cookie 属于敏感数据，只应在本机使用；如果 cookie 过期，需要重新登录腾讯文档。
+
+### 群聊自学习 / self-learning
+
+Bridge 可以按群收集少量群友发言样本，用来提炼本群常见表达、语气词和短句风格，再作为 direct 回复 prompt 里的低权重提示。这个功能默认关闭，适合在你明确授权的私有群里试用。
+
+```dotenv
+SELF_LEARNING_ENABLED=false
+SELF_LEARNING_COLLECT_ENABLED=false
+SELF_LEARNING_INJECT_ENABLED=false
+SELF_LEARNING_ALLOWED_GROUP_IDS=
+SELF_LEARNING_MIN_MESSAGE_CHARS=2
+SELF_LEARNING_MAX_MESSAGE_CHARS=300
+SELF_LEARNING_MAX_SAMPLES_PER_GROUP=500
+SELF_LEARNING_RETENTION_DAYS=30
+SELF_LEARNING_MAX_PROMPT_CHARS=500
+SELF_LEARNING_MIN_COUNT_FOR_PROMPT=3
+SELF_LEARNING_DATA_FILENAME=self_learning.json
+```
+
+启用方式示例：
+
+```dotenv
+SELF_LEARNING_ENABLED=true
+SELF_LEARNING_COLLECT_ENABLED=true
+SELF_LEARNING_INJECT_ENABLED=true
+SELF_LEARNING_ALLOWED_GROUP_IDS=975805598
+```
+
+运行方式：
+
+- 用户普通群消息进入本地最近上下文时，bridge 会尝试采集一条经过过滤的短样本；
+- direct 回复构造 prompt 时，会读取同群 `self_learning.json` 并生成一段低权重提示；
+- 提示内容只包含“常见表达、语气词、风格信号”这类汇总，不包含用户 QQ、消息 id 或长篇原文；
+- 采集或读取失败只记录内部 warning，不影响正常聊天回复。
+
+边界和隐私原则：
+
+- 只对 `SELF_LEARNING_ALLOWED_GROUP_IDS` 里的群生效，不跨群复用；
+- 学习数据保存在 `groups/<group_id>/self_learning.json`，属于真实群聊派生数据，不要提交或公开分享；
+- 不学习机器人自己的回复，不学习 `/context`、`/search`、`/deepseek`、`jrrp` 等命令；
+- 图片 OCR 文本如果被标记为不持久化，会优先使用去 OCR 的文本，避免把非持久化识图内容写入学习文件；
+- 只生成“常见表达/语气词/风格信号”这类汇总提示，不自动改写 `persona.md`、`people.md` 或 `knowledge.md`；
+- v1 只注入 direct 回复 prompt，主动发言 proactive 不使用 self-learning，避免把旧梗硬拉回当前聊天。
 
 ## 回复策略
 
@@ -459,10 +505,12 @@ OCR_LOG_IMAGE_URLS=false
 
 模式：
 
-- `direct_only`：只处理 direct 消息里的图片；
+- `direct_only`：只处理 direct 消息里的图片；direct 包括 @ 机器人、回复机器人上一条消息，或文本命中机器人名字/昵称（如 `Esti`、`机器人`）。
 - `direct_and_context`：direct 同步识别，普通允许群图片异步识别并加入上下文；
 - `context_only`：只做普通上下文图片识别；
 - `all` / `all_allowed_messages`：允许更多路由使用 OCR。
+
+当 direct 消息本身是 QQ 回复/引用时，Bridge 会优先识别当前消息里的图片，也会尝试识别被回复/引用消息里的图片。被引用图片可能来自 OneBot reply segment 内嵌的原消息，也可能来自本轮运行期最近上下文中缓存的图片引用；这些图片引用只保留在内存里，不写入持久化上下文文件。
 
 隐私原则：默认不识图、不持久化 OCR 文本、不记录 OCR 文本、不记录图片 URL。图片文件只作为临时文件传给 provider，调用后删除。若要使用 Hermes 或其他外部 provider，需要显式设置：
 
@@ -641,6 +689,28 @@ sudo docker logs --tail 100 napcat
 5. Hermes 是否超时、返回空、provider/model 是否可用；
 6. OneBot 发送是否失败；
 7. 如果是图片问题，OCR 是否开启、provider 是否允许、图片 URL 是否可拉取。
+
+### self-learning 没有生成或没有进入 prompt
+
+先确认功能是显式开启的：
+
+```dotenv
+SELF_LEARNING_ENABLED=true
+SELF_LEARNING_COLLECT_ENABLED=true
+SELF_LEARNING_INJECT_ENABLED=true
+SELF_LEARNING_ALLOWED_GROUP_IDS=<group_id>
+```
+
+再按顺序检查：
+
+1. 群号是否在 `SELF_LEARNING_ALLOWED_GROUP_IDS` 中；
+2. 消息是否是普通用户消息，而不是 bot 自己的回复；
+3. 消息是否被过滤为命令、链接、CQ 图片码、过短、过长或疑似敏感内容；
+4. `groups/<group_id>/self_learning.json` 是否能由 bridge 进程写入；
+5. 是否已达到 `SELF_LEARNING_MIN_COUNT_FOR_PROMPT`，未达到时 prompt 会显示暂无学习提示；
+6. 本次是否是 direct 回复，主动发言 proactive 不注入 self-learning 提示。
+
+`self_learning.json` 属于群聊派生数据，排障时不要贴到公开 issue 或提交到仓库。
 
 ### 机器人回复“稍后重试一下”
 
