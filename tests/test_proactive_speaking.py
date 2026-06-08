@@ -162,7 +162,35 @@ def test_proactive_prompt_is_separate_and_context_first():
     assert "这不是被 @ 回复" in prompt
     assert prompt.index("群聊近况摘要") < prompt.index("群聊上下文") < prompt.index("基础人设与群聊提示词")
     assert "今天群里全员低电量" in prompt
-    assert "如果不适合插话或实在没话接就输出空字符串" in prompt
+    assert "如果不适合插话或实在没话接就保持沉默" in prompt
+    assert "如果不发言，只输出 <SILENT>" in prompt
+
+
+def test_proactive_prompt_logs_section_diagnostics(monkeypatch):
+    bridge = load_bridge_module()
+    configure_proactive(bridge)
+    bridge._recent_messages_by_group.clear()
+    bridge._context_summaries_by_group.clear()
+    logs = []
+
+    monkeypatch.setattr(bridge, "log", lambda obj: logs.append(obj))
+    monkeypatch.setattr(bridge, "format_context_summaries", lambda group_id=None: "摘" * 1000)
+    monkeypatch.setattr(bridge, "normal_chat_persona_bundle_for_prompt", lambda group_id: "人设")
+
+    prompt = bridge.build_proactive_prompt(make_event(text="有没有人救一下"), ["burst"])
+
+    record = next(item for item in logs if item["type"] == "prompt_rendered")
+    assert record["kind"] == "proactive"
+    assert record["group_id"] == 975805598
+    assert record["char_count"] == len(prompt)
+    assert record["truncated_sections"] == ["summary_context"]
+    summary = next(section for section in record["sections"] if section["key"] == "summary_context")
+    recent = next(section for section in record["sections"] if section["key"] == "recent_context")
+    assert summary["budget_chars"] == 600
+    assert summary["truncated"] is True
+    assert recent["priority"] == "critical"
+    assert recent["truncated"] is False
+    assert "prompt" not in record
 
 
 def test_proactive_context_decay_prioritizes_recent_human_messages():
@@ -190,6 +218,7 @@ def test_proactive_context_decay_prioritizes_recent_human_messages():
     assert "主体不确定就用“当事人/楼上/这波”泛称" in prompt
     assert "低权重旧消息和近况摘要只作背景" in prompt
     assert "只能重复旧关键词、旧梗或 Esti 之前的说法" in prompt
+    assert "<SILENT>" in prompt
 
 
 def test_mark_proactive_replied_resets_score_and_counts_day():
@@ -476,10 +505,51 @@ def test_proactive_daily_limit_zero_disables_cap():
     assert result["blocked"] == ""
     assert result["should_trigger"] is True
 
+
+def test_proactive_reply_treats_silent_marker_as_silent_and_uses_no_session(monkeypatch):
+    bridge = load_bridge_module()
+    configure_proactive(bridge)
+    calls = []
+
+    def fake_run(prompt, group_id=None, use_group_session=True, purpose="unknown"):
+        calls.append({"prompt": prompt, "group_id": group_id, "use_group_session": use_group_session, "purpose": purpose})
+        return "<SILENT>"
+
+    monkeypatch.setattr(bridge, "run_hermes_raw", fake_run)
+
+    reply = bridge.run_proactive_reply(make_event(text="普通热闹消息"), ["burst"])
+
+    assert reply == ""
+    assert calls[0]["group_id"] == 975805598
+    assert calls[0]["use_group_session"] is False
+    assert calls[0]["purpose"] == "proactive_reply"
+
+
+def test_proactive_reply_treats_output_silent_instruction_as_silent(monkeypatch):
+    bridge = load_bridge_module()
+    configure_proactive(bridge)
+    monkeypatch.setattr(bridge, "run_hermes_raw", lambda *args, **kwargs: "输出 <SILENT>")
+
+    reply = bridge.run_proactive_reply(make_event(text="普通热闹消息"), ["burst"])
+
+    assert reply == ""
+
+
 def test_proactive_reply_treats_fallback_templates_as_silent(monkeypatch):
     bridge = load_bridge_module()
     configure_proactive(bridge)
     monkeypatch.setattr(bridge, "run_hermes_raw", lambda *args, **kwargs: "我有点卡住了 等会再说")
+
+    reply = bridge.run_proactive_reply(make_event(text="普通热闹消息"), ["burst"])
+
+    assert reply == ""
+
+
+def test_proactive_reply_treats_silence_rationale_as_silent(monkeypatch):
+    bridge = load_bridge_module()
+    configure_proactive(bridge)
+    leaked = "空的输出是正确的——这个主动发言判断的结果就是当前话题已经是持续讨论 群友之间在不断回应，所以没有新的接话点不需要再输出什么了"
+    monkeypatch.setattr(bridge, "run_hermes_raw", lambda *args, **kwargs: leaked)
 
     reply = bridge.run_proactive_reply(make_event(text="普通热闹消息"), ["burst"])
 
@@ -556,6 +626,24 @@ def test_distinct_proactive_reply_after_bot_history_still_sends(monkeypatch):
     assert sent == [(975805598, "那还是先看晚上吃什么")]
 
 
+def test_queued_proactive_revalidates_cooldown_before_generation(monkeypatch):
+    bridge = load_bridge_module()
+    configure_proactive(bridge)
+    bridge.PROACTIVE_GROUP_COOLDOWN_SECONDS = 20.0
+    bridge.MIN_SECONDS_BETWEEN_REPLIES = 0.0
+    bridge.proactive_state_for_group(975805598)["last_proactive_at"] = 1000.0
+    monkeypatch.setattr(bridge.time, "time", lambda: 1005.0)
+    monkeypatch.setattr(bridge, "run_proactive_reply", lambda event, reasons: (_ for _ in ()).throw(AssertionError("blocked proactive intent must not generate")))
+
+    result = asyncio.run(bridge.process_proactive_reply_intent(
+        975805598,
+        {"kind": "proactive", "event": make_event(text="普通热闹消息"), "proactive": {"score": 20.0, "reasons": ["burst"]}},
+    ))
+
+    assert result["ignored"] == "proactive_revalidated_blocked"
+    assert result["blocked"] == "group_cooldown"
+
+
 def test_proactive_trigger_with_fallback_output_does_not_send(monkeypatch):
     bridge = load_bridge_module()
     configure_proactive(bridge)
@@ -589,8 +677,10 @@ def test_proactive_prompt_allows_silence_or_natural_new_topic_not_fallback():
 
     prompt = bridge.build_proactive_prompt(make_event(text="无敌了icbm"), ["burst"])
 
-    assert "实在没话接就输出空字符串" in prompt
-    assert "不要说自己没想好" in prompt
+    assert "<SILENT>" in prompt
+    assert prompt.count("<SILENT>") == 1
+    assert "空输出是正确的" not in prompt
+    assert "不要解释沉默原因或输出规则" in prompt
     assert "可以自然开一个很轻的小话题" in prompt
 
 def test_group_specific_proactive_threshold_overrides_global_threshold():

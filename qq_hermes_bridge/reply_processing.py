@@ -71,13 +71,22 @@ def proactive_duplicate_result(proactive: dict[str, Any], *, queue_remaining: in
     }
 
 
-def proactive_skipped_result(proactive: dict[str, Any], *, queue_remaining: int) -> dict[str, Any]:
-    return {
+def proactive_skipped_result(
+    proactive: dict[str, Any],
+    *,
+    queue_remaining: int,
+    reason: str = "proactive_model_skipped",
+    blocked: str = "",
+) -> dict[str, Any]:
+    result: dict[str, Any] = {
         "ok": True,
-        "ignored": "proactive_model_skipped",
+        "ignored": reason,
         "score": proactive.get("score"),
         "queue_remaining": queue_remaining,
     }
+    if blocked:
+        result["blocked"] = blocked
+    return result
 
 
 def proactive_send_failed_result(response: dict[str, Any]) -> dict[str, Any]:

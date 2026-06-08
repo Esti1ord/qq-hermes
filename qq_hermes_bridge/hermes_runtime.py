@@ -55,6 +55,22 @@ def build_hermes_cmd(
     return cmd
 
 
+HERMES_CLI_WARNING_PREFIXES = (
+    "Warning: Unknown toolsets:",
+)
+
+
+def strip_cli_warning_lines(output: str) -> str:
+    """Remove Hermes CLI diagnostic warning lines that can appear on stdout."""
+    lines = []
+    for line in str(output or "").splitlines():
+        clean = line.strip()
+        if any(clean.startswith(prefix) for prefix in HERMES_CLI_WARNING_PREFIXES):
+            continue
+        lines.append(line)
+    return "\n".join(lines).strip()
+
+
 def output_indicates_missing_session(output: str) -> bool:
     return "No session found matching" in output or "Use 'hermes sessions list'" in output
 
@@ -64,8 +80,34 @@ def extract_session_id(output: str) -> str:
     return match.group(1) if match else ""
 
 
+_XML_TOOL_CALL_TAGS = (
+    "function_calls",
+    "antml:function_calls",
+    "invoke",
+    "antml:invoke",
+    "parameter",
+    "antml:parameter",
+)
+
+
+def strip_tool_call_xml(output: str) -> str:
+    """Remove XML tool-call markup that may leak from Hermes raw output."""
+    clean = output
+    # Remove matched pairs first (most specific)
+    for tag in _XML_TOOL_CALL_TAGS:
+        pattern = re.compile(rf"<{re.escape(tag)}[^>]*>.*?</{re.escape(tag)}>", re.DOTALL | re.IGNORECASE)
+        clean = pattern.sub("", clean)
+    # Then remove any remaining standalone tags (opening or closing)
+    for tag in _XML_TOOL_CALL_TAGS:
+        pattern = re.compile(rf"</?{re.escape(tag)}[^>]*>", re.IGNORECASE)
+        clean = pattern.sub("", clean)
+    return clean.strip()
+
+
 def strip_session_footer(output: str) -> str:
-    return re.sub(r"\n+session_id:\s*[A-Za-z0-9_\-]+\s*$", "", output or "").strip()
+    clean = strip_cli_warning_lines(output)
+    clean = strip_tool_call_xml(clean)
+    return re.sub(r"\n+session_id:\s*[A-Za-z0-9_\-]+\s*$", "", clean).strip()
 
 
 def sqlite_message_count_for_session(session_id: str, *, db_path: Path) -> int:

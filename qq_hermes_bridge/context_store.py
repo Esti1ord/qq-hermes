@@ -163,8 +163,17 @@ def format_recent_context(
     if not messages:
         return "（暂无最近上下文）"
     selected = messages[-context_max_messages:]
-    lines = ["注意：以上每一个编号都是一条独立群消息，编号越大越新；当前消息/引用消息优先于旧上下文。编号不同、QQ 不同就代表不同发言人。机器人历史回复只用于理解连续对话，不要当作措辞模板；正在生成回复是队列标记，不代表已经回答。"]
-    for idx, item in enumerate(selected, 1):
+    lines = [
+        "注意：以上每一个编号都是一条独立群消息，编号越大越新；最近上下文有时间权重。高权重最新上下文优先用于判断当前指代、语气和连续对话，低权重较早上下文只作为背景。当前消息/引用消息优先于旧上下文，也优先于这里的低权重背景。编号不同、QQ 不同就代表不同发言人。机器人历史回复只用于理解连续对话，不要当作措辞模板；正在生成回复是队列标记，不代表已经回答。"
+    ]
+    focus_count = min(6, len(selected))
+    memory_count = len(selected) - focus_count
+    if memory_count:
+        lines.append("低权重：较早上下文（只帮助理解前情，不要强行延续旧话题）")
+        for idx, item in enumerate(selected[:memory_count], 1):
+            lines.extend(format_context_item(idx, item))
+    lines.append("高权重：最新上下文（优先用于理解当前消息的指代和语气）")
+    for idx, item in enumerate(selected[memory_count:], memory_count + 1):
         lines.extend(format_context_item(idx, item))
     return "\n".join(lines)
 

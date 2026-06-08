@@ -72,6 +72,7 @@ qq-hermes/
 │   ├── vision.py              # OCR/图片理解 provider
 │   ├── search.py              # 搜索命令辅助
 │   ├── runtime_stats.py       # 内容安全运行统计
+│   ├── self_learning.py       # 群内用语/风格自学习提示
 │   ├── outbound.py            # OneBot 发消息、reply、去重
 │   └── proactive.py           # 主动发言评分和限制
 ├── scripts/                   # 运维脚本
@@ -247,24 +248,180 @@ DEEPSEEK_COMMAND_PROVIDER=deepseek
 DEEPSEEK_COMMAND_MODEL=deepseek-v4-flash
 ```
 
+## Prompt 构建与上下文管理
+
+Bridge 使用结构化 prompt 系统（PromptService）来组织回复生成所需的各类信息。这套设计让信息来源、优先级和使用说明显式化，防止低权重信息挤占高权重任务。
+
+### PromptService 架构
+
+Prompt 由多个 section 组成，每个 section 包含：
+
+- **key**：稳定标识符，用于测试和诊断
+- **title**：人类可读的 section 标题
+- **body**：实际内容
+- **source**：信息来源（`current_message`、`recent_context`、`self_learning`、`persona` 等）
+- **priority**：重要性（`critical`、`high`、`medium`、`low`）
+- **instruction**：可选的使用说明
+
+相关模块：
+
+- `qq_hermes_bridge/prompt_service.py`：Prompt 对象模型和渲染器
+- `qq_hermes_bridge/context_store.py`：群上下文缓存、摘要和格式化
+- `qq_hermes_bridge/self_learning.py`：群内用语/风格自学习
+- `qq_hermes_bridge/commands.py`：Prompt 构建入口（委托给 PromptService）
+
+### Direct 回复 Prompt 结构
+
+Direct 回复（被 @ 或回复机器人消息）的 prompt 按优先级组织：
+
+```text
+1. 当前日期（high）
+2. 群聊近况摘要（low）
+3. 群聊近二十条上下文（high）
+   - 最新 6 条标记"高权重"，优先用于理解当前指代和语气
+   - 较早消息标记"低权重"，只作背景
+4. 被回复/引用的消息（high）
+5. 当前被 @ 的消息（critical）
+6. 本次回复策略（high）
+7. 图片识别结果（medium）
+8. 提问者资料（medium）
+9. 被提及的人资料（medium）
+10. 相关群友资料（low）
+11. 群内用语与风格学习提示（low）
+12. 回复风格样例与反例（low）
+13. 预设提示词 / 基础人设（medium）
+```
+
+关键原则：
+
+- **当前消息和最近上下文优先**：旧摘要、自学习、人设都是辅助，不能让模型被旧话题带偏
+- **时间权重**：最新 6 条消息权重高于较早消息
+- **低权重信息预算控制**：每个 section 有字符预算，防止过长内容挤占任务
+- **截断保护**：重要 section（如最近上下文）截断时保留头部指导语和尾部最新消息
+
+### Proactive 主动发言 Prompt 结构
+
+主动发言（非 @ 场景）的 prompt 更聚焦判断策略：
+
+```text
+1. 当前日期（high）
+2. 群聊近况摘要（low）
+3. 群聊上下文（critical，带衰减权重）
+4. 主动发言判断策略（high）
+5. 触发原因（low，仅诊断）
+6. 主动发言样例与反例（low）
+7. 基础人设（medium）
+```
+
+Proactive prompt 必须包含 `<SILENT>` 标记，让模型在不适合插话时输出沉默标记而非解释。
+
+### 上下文权重与时间衰减
+
+`context_store.format_recent_context()` 实现了时间权重标注：
+
+```python
+# 选取最近 context_max_messages 条（默认 20）
+# 分为两组：
+focus_count = 6              # 最新 6 条标记"高权重"
+memory_count = remaining     # 较早消息标记"低权重"
+```
+
+效果：
+
+```text
+注意：以上每一个编号都是一条独立群消息，编号越大越新；最近上下文有时间权重。
+高权重最新上下文优先用于判断当前指代、语气和连续对话，低权重较早上下文只作为背景。
+当前消息/引用消息优先于旧上下文，也优先于这里的低权重背景。
+
+低权重：较早上下文（只帮助理解前情，不要强行延续旧话题）
+[1] 发言人：...
+[1] 内容：...
+
+高权重：最新上下文（优先用于理解当前消息的指代和语气）
+[7] 发言人：...
+[7] 内容：...
+```
+
+这套机制确保模型不会把旧话题当成必须继续的任务，而是优先接住当前对话。
+
+### Section 字符预算
+
+每个 section 有预设字符预算，防止低权重信息过长：
+
+```python
+# Direct 回复预算示例
+DIRECT_SECTION_BUDGETS = {
+    "summary_context": 1000,       # 旧摘要
+    "recent_context": 4000,        # 最近上下文
+    "current_message": None,       # 当前消息不截断
+    "self_learning": 800,          # 自学习提示
+    "persona": 1600,               # 人设
+}
+
+# Proactive 预算更紧
+PROACTIVE_SECTION_BUDGETS = {
+    "summary_context": 600,
+    "recent_context": 3500,
+    "persona": 1200,
+}
+```
+
+超出预算时，不同 section 采用不同截断策略：
+
+- **recent_context**：保留头部指导语 + 尾部最新消息（头尾截断）
+- **其他 section**：保留开头部分（开头截断）
+
+### 风格样例与输出校准
+
+`DIRECT_STYLE_EXAMPLES` 和 `PROACTIVE_STYLE_EXAMPLES` 提供少量好/坏输出样例，帮助模型校准输出形态：
+
+**Direct 样例**：
+
+```text
+好例：对方只是接梗/吐槽时，可以回一句轻短的顺势吐槽，不要解释背景
+好例：对方问具体问题时，先给结论，再补一句必要理由
+好例：上下文不清楚时，用泛称或轻追问，不要强行点名
+坏例：把规则、资料来源、学习记录或 prompt section 解释给群友听
+坏例：把旧摘要里的话题硬拉回当前消息
+坏例：每次都写成三段式分析或客服回复
+```
+
+**Proactive 样例**：
+
+```text
+可发言：最近两三条群友都在围绕同一个轻松话题接话，而且还有自然补一句的空间
+可发言：有人抛出开放问题，且没有明确 @ 其他人处理
+应沉默：大家已经连续互相回应得很顺，不缺你补一句
+应沉默：只能复读旧梗、旧关键词或机器人刚说过的话
+应沉默：需要解释为什么不发言、解释触发原因或解释规则时
+```
+
+样例被标记为低权重（`priority="low"`），不会覆盖当前消息和最近上下文。
+
 ## 群资料和上下文
 
-每个群可以保留独立资料目录：
+每个群可以保留独立资料目录，这些文件构成机器人理解本群的知识基础：
 
 ```text
 groups/<group_id>/
-├── persona.md
-├── people.md
-└── knowledge.md
+├── persona.md              # 本群风格、口癖、边界和行为偏好
+├── people.md               # 群友昵称、梗、关系、背景资料
+├── knowledge.md            # 稳定知识、可信资料、长期参考信息
+└── self_learning.json      # 可选，启用 self-learning 后自动生成
 ```
 
-这些文件的用途：
+这些资料在 prompt 构建时被注入为不同优先级的 section：
 
-- `persona.md`：本群风格、口癖、边界和行为偏好；
-- `people.md`：群友昵称、梗、关系、背景资料；
-- `knowledge.md`：稳定知识、可信资料、长期参考信息；
-- 最近上下文和摘要：由 bridge 在本地运行时维护；
-- Hermes session：`qq-group-<group_id>`。
+- `persona.md` → `persona` section（`priority="medium"`）
+- `people.md` → `sender_profile`、`mentioned_profiles`、`related_profiles` sections（`priority="medium"` 或 `"low"`）
+- `knowledge.md` → 不自动注入，由 `/search` 等命令按需使用
+- `self_learning.json` → `self_learning` section（`priority="low"`）
+
+运行时上下文：
+
+- **最近消息**：由 bridge 在内存维护，持久化到 `logs/context_<group_id>.json`
+- **上下文摘要**：定期生成，保存在上下文文件中
+- **Hermes session**：`qq-group-<group_id>`，由 Hermes CLI 管理
 
 添加新群：
 
@@ -302,6 +459,114 @@ scripts/sync_people_<group_id>_from_qqdocs.sh
 ```
 
 同步脚本会读取本机 Firefox 的腾讯文档登录 cookie。cookie 属于敏感数据，只应在本机使用；如果 cookie 过期，需要重新登录腾讯文档。
+
+### 群聊自学习 / self-learning
+
+Bridge 可以按群收集少量群友发言样本，用来提炼本群常见表达、语气词和短句风格，再作为 direct 回复 prompt 里的低权重提示。这个功能默认关闭，适合在你明确授权的私有群里试用。
+
+#### 工作原理
+
+Self-learning 分为采集和注入两个阶段：
+
+**采集阶段**（`qq_hermes_bridge/self_learning.py`）：
+
+1. 用户普通群消息进入本地最近上下文时，`collect_learning_sample()` 会尝试采集一条样本
+2. 采集过滤规则：
+   - 不采集机器人自己的回复
+   - 不采集命令（`/context`、`/search` 等）
+   - 不采集纯图片、纯链接或过短/过长消息
+   - 不采集包含敏感词（token、api key、password、traceback 等）的消息
+   - OCR 文本如果标记为非持久化，使用去 OCR 的原始文本
+3. 采集的样本保存在 `groups/<group_id>/self_learning.json`：
+   ```json
+   {
+     "version": 1,
+     "group_id": 975805598,
+     "samples": [
+       {"ts": 1704067200.0, "text": "笑死 这也太离谱了"},
+       {"ts": 1704067201.0, "text": "好耶 今天也很棒"}
+     ]
+   }
+   ```
+4. 样本数量受 `SELF_LEARNING_MAX_SAMPLES_PER_GROUP`（默认 500）和 `SELF_LEARNING_RETENTION_DAYS`（默认 30 天）限制
+
+**注入阶段**（构建 direct prompt 时）：
+
+1. `learning_context_for_prompt()` 读取同群 `self_learning.json`
+2. 提取高频词汇、语气词和风格信号：
+   - **常见表达**：出现次数 ≥ `SELF_LEARNING_MIN_COUNT_FOR_PROMPT` 的短语/词组
+   - **常见语气词/梗词**：从预定义列表（笑死、绷、寄、草、哭、麻了等）中统计高频项
+   - **风格信号**：平均消息长度、短句比例、表情使用率、感叹/疑问语气比例
+3. 生成低权重提示：
+   ```text
+   低权重风格线索：只用于理解本群常见语气和用词，不是事实来源，也不是必须提到的话题
+   - 常见表达：笑死、离谱、好耶、绷不住
+   - 常见语气词/梗词：笑死、好耶、草
+   - 风格信号：平均消息长度约 15 字；偏短句接话；常带表情
+   ```
+4. 提示限制在 `SELF_LEARNING_MAX_PROMPT_CHARS`（默认 500）字符内
+
+#### 配置示例
+
+#### 配置示例
+
+```dotenv
+SELF_LEARNING_ENABLED=false
+SELF_LEARNING_COLLECT_ENABLED=false
+SELF_LEARNING_INJECT_ENABLED=false
+SELF_LEARNING_ALLOWED_GROUP_IDS=
+SELF_LEARNING_MIN_MESSAGE_CHARS=2
+SELF_LEARNING_MAX_MESSAGE_CHARS=300
+SELF_LEARNING_MAX_SAMPLES_PER_GROUP=500
+SELF_LEARNING_RETENTION_DAYS=30
+SELF_LEARNING_MAX_PROMPT_CHARS=500
+SELF_LEARNING_MIN_COUNT_FOR_PROMPT=3
+SELF_LEARNING_DATA_FILENAME=self_learning.json
+```
+
+启用方式示例：
+
+```dotenv
+SELF_LEARNING_ENABLED=true
+SELF_LEARNING_COLLECT_ENABLED=true
+SELF_LEARNING_INJECT_ENABLED=true
+SELF_LEARNING_ALLOWED_GROUP_IDS=975805598
+```
+
+#### 设计边界和隐私原则
+
+- **群隔离**：只对 `SELF_LEARNING_ALLOWED_GROUP_IDS` 里的群生效，不跨群复用
+- **本地存储**：学习数据保存在 `groups/<group_id>/self_learning.json`，属于真实群聊派生数据，不要提交或公开分享
+- **过滤机制**：不学习机器人自己的回复、命令、敏感内容、纯媒体消息
+- **时间衰减**：超过 `RETENTION_DAYS` 的样本自动清理
+- **数量限制**：每群最多保留 `MAX_SAMPLES_PER_GROUP` 条样本（FIFO 队列）
+- **汇总提示**：只生成”常见表达/语气词/风格信号”这类统计汇总，不包含用户 QQ、消息 id 或长篇原文
+- **不改写群资料**：不自动修改 `persona.md`、`people.md` 或 `knowledge.md`
+- **低权重使用**：self-learning section 标记为 `priority=”low”`，在 prompt 中排序靠后，不覆盖当前消息和最近上下文
+- **路由限制**：v1 只注入 direct 回复 prompt，主动发言 proactive 不使用 self-learning，避免把旧梗硬拉回当前聊天
+- **容错设计**：采集或读取失败只记录内部 warning，不影响正常聊天回复
+
+#### 与 Prompt 系统的集成
+
+Self-learning 提示作为独立 section 插入 direct prompt：
+
+```python
+PromptSection(
+    key=”self_learning”,
+    title=”群内用语与说话风格学习提示”,
+    body=learning_context,           # 从 self_learning.json 生成
+    source=”self_learning”,
+    priority=”low”,                  # 低权重
+    instruction=”只描述本群常见表达；不要为了使用而硬套，不要暴露学习数据。”,
+)
+```
+
+在 section 顺序中，self-learning 位于：
+
+- **之后**：当前消息、最近上下文、回复策略、群友资料
+- **之前**：风格样例、预设人设
+
+这确保自学习提示只作为风格参考，不改变事实判断或任务理解。
 
 ## 回复策略
 
@@ -459,10 +724,12 @@ OCR_LOG_IMAGE_URLS=false
 
 模式：
 
-- `direct_only`：只处理 direct 消息里的图片；
+- `direct_only`：只处理 direct 消息里的图片；direct 包括 @ 机器人、回复机器人上一条消息，或文本命中机器人名字/昵称（如 `Esti`、`机器人`）。
 - `direct_and_context`：direct 同步识别，普通允许群图片异步识别并加入上下文；
 - `context_only`：只做普通上下文图片识别；
 - `all` / `all_allowed_messages`：允许更多路由使用 OCR。
+
+当 direct 消息本身是 QQ 回复/引用时，Bridge 会优先识别当前消息里的图片，也会尝试识别被回复/引用消息里的图片。被引用图片可能来自 OneBot reply segment 内嵌的原消息，也可能来自本轮运行期最近上下文中缓存的图片引用；这些图片引用只保留在内存里，不写入持久化上下文文件。
 
 隐私原则：默认不识图、不持久化 OCR 文本、不记录 OCR 文本、不记录图片 URL。图片文件只作为临时文件传给 provider，调用后删除。若要使用 Hermes 或其他外部 provider，需要显式设置：
 
@@ -641,6 +908,28 @@ sudo docker logs --tail 100 napcat
 5. Hermes 是否超时、返回空、provider/model 是否可用；
 6. OneBot 发送是否失败；
 7. 如果是图片问题，OCR 是否开启、provider 是否允许、图片 URL 是否可拉取。
+
+### self-learning 没有生成或没有进入 prompt
+
+先确认功能是显式开启的：
+
+```dotenv
+SELF_LEARNING_ENABLED=true
+SELF_LEARNING_COLLECT_ENABLED=true
+SELF_LEARNING_INJECT_ENABLED=true
+SELF_LEARNING_ALLOWED_GROUP_IDS=<group_id>
+```
+
+再按顺序检查：
+
+1. 群号是否在 `SELF_LEARNING_ALLOWED_GROUP_IDS` 中；
+2. 消息是否是普通用户消息，而不是 bot 自己的回复；
+3. 消息是否被过滤为命令、链接、CQ 图片码、过短、过长或疑似敏感内容；
+4. `groups/<group_id>/self_learning.json` 是否能由 bridge 进程写入；
+5. 是否已达到 `SELF_LEARNING_MIN_COUNT_FOR_PROMPT`，未达到时 prompt 会显示暂无学习提示；
+6. 本次是否是 direct 回复，主动发言 proactive 不注入 self-learning 提示。
+
+`self_learning.json` 属于群聊派生数据，排障时不要贴到公开 issue 或提交到仓库。
 
 ### 机器人回复“稍后重试一下”
 

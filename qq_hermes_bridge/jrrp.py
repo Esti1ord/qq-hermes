@@ -18,7 +18,7 @@ DEFAULT_LEVEL = {"name": "平", "faces": ["(￣ω￣)"], "comments": ["风平浪
 
 def is_jrrp_command(text: str) -> bool:
     """Trigger only when the whole normalized message equals jrrp."""
-    return matching.exact_normalized_match(text, "jrrp")
+    return matching.exact_normalized_match(text, "jrrp") | matching.exact_normalized_match(text, "jrro")
 
 
 def load_json_dict(path: Path, *, on_error: Callable[[Exception], None] | None = None) -> dict[str, Any]:
