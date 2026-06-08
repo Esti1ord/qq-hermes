@@ -24,9 +24,10 @@ from urllib.parse import quote_plus
 
 import httpx
 from fastapi import FastAPI, HTTPException, Request
+from fastapi.responses import PlainTextResponse
 from pydantic import BaseModel
 
-from qq_hermes_bridge import app_helpers, command_utils, commands, config_utils, content_analysis_log as analysis_log_utils, context_store, events, group_files, handlers, hermes_runtime, jrrp, logging_utils, matching, media, media_fetch, model_output, onebot, outbound, proactive, profiles, reply_processing, reply_queue, runtime_stats, search, search_runtime, self_learning, text_utils, user_controls, vision
+from qq_hermes_bridge import app_helpers, command_utils, commands, config_utils, content_analysis_log as analysis_log_utils, context_store, events, group_files, handlers, hermes_runtime, jrrp, logging_utils, matching, media, media_fetch, metrics, model_output, onebot, outbound, proactive, profiles, reply_processing, reply_queue, runtime_stats, search, search_runtime, self_learning, text_utils, user_controls, vision
 
 BASE_DIR = Path(__file__).resolve().parent.parent
 LOG_DIR = BASE_DIR / "logs"
@@ -162,6 +163,9 @@ RUNTIME_STATS_ENABLED = runtime_stats.enabled_from_env(os.getenv("RUNTIME_STATS_
 RUNTIME_STATS_FILE = Path(os.getenv("RUNTIME_STATS_FILE", str(LOG_DIR / "runtime_stats.jsonl")))
 RUNTIME_STATS_USER_HASH_SALT = os.getenv("RUNTIME_STATS_USER_HASH_SALT", BOT_QQ or "qq-hermes-local")
 RUNTIME_STATS_SUMMARY_INTERVAL_SECONDS = float(os.getenv("RUNTIME_STATS_SUMMARY_INTERVAL_SECONDS", "300"))
+PROMETHEUS_ENABLED = config_utils.parse_bool(os.getenv("PROMETHEUS_ENABLED", "true"))
+PROMETHEUS_INCLUDE_GROUP_ID_LABEL = config_utils.parse_bool(os.getenv("PROMETHEUS_INCLUDE_GROUP_ID_LABEL", "false"))
+metrics.configure(enabled=PROMETHEUS_ENABLED, include_group_id_label=PROMETHEUS_INCLUDE_GROUP_ID_LABEL)
 PERF_OBS_ENABLED = config_utils.parse_bool(os.getenv("PERF_OBS_ENABLED", "true"))
 PERF_OBS_DETAIL_LEVEL = runtime_stats.normalize_label(os.getenv("PERF_OBS_DETAIL_LEVEL", "standard"), default="standard")
 PERF_OBS_SAMPLE_RATE = max(0.0, min(1.0, float(os.getenv("PERF_OBS_SAMPLE_RATE", "1.0"))))
@@ -296,6 +300,7 @@ def log(obj: Any) -> None:
 
 
 def runtime_stat(stat: str, **fields: Any) -> None:
+    metrics.observe_runtime_stat(stat, fields)
     if not RUNTIME_STATS_ENABLED:
         return
     if os.getenv("PYTEST_CURRENT_TEST") and RUNTIME_STATS_FILE == LOG_DIR / "runtime_stats.jsonl":
@@ -308,6 +313,7 @@ def runtime_stat(stat: str, **fields: Any) -> None:
 
 def increment_runtime_counter(name: str, amount: int = 1) -> None:
     _runtime_counters[name] = int(_runtime_counters.get(name, 0)) + int(amount)
+    metrics.observe_runtime_counter(name, amount)
 
 
 def runtime_user_hash(user_id: Any) -> str:
@@ -352,8 +358,6 @@ def runtime_perf_enabled() -> bool:
 
 
 def emit_perf_stat(stat: str, **fields: Any) -> None:
-    if not runtime_perf_enabled():
-        return
     enriched = dict(fields)
     if "duration_ms" in enriched and "duration_bucket" not in enriched:
         enriched["duration_bucket"] = runtime_stats.duration_bucket(enriched.get("duration_ms") or 0)
@@ -365,6 +369,9 @@ def emit_perf_stat(stat: str, **fields: Any) -> None:
         enriched["output_len_bucket"] = runtime_stats.length_bucket(enriched.get("output_len") or 0)
     if "result_len" in enriched and "result_len_bucket" not in enriched:
         enriched["result_len_bucket"] = runtime_stats.length_bucket(enriched.get("result_len") or 0)
+    if not runtime_perf_enabled():
+        metrics.observe_runtime_stat(stat, enriched)
+        return
     runtime_stat(stat, **enriched)
 
 
@@ -886,6 +893,8 @@ def load_context_cache() -> None:
         recent_messages_for_group(group_id).append(clean)
         if group_id == TARGET_GROUP_ID:
             _recent_messages.append(clean)
+    for group_id, messages in _recent_messages_by_group.items():
+        metrics.set_context_messages(group_id, len(messages))
 
 
 def cooldown_key(group_id: Any, user_id: Any) -> str:
@@ -1319,6 +1328,7 @@ def compact_context_if_needed(group_id: int) -> None:
 def remember_message_item(group_id: int, item: dict[str, Any]) -> None:
     recent_messages_for_group(group_id).append(item)
     compact_context_if_needed(group_id)
+    metrics.set_context_messages(group_id, len(recent_messages_for_group(group_id)))
     if group_id == TARGET_GROUP_ID:
         _recent_messages.append(item)
     if CONTEXT_PERSIST_ENABLED:
@@ -1352,6 +1362,8 @@ def drop_last_bot_pending_reply(group_id: int | None) -> None:
         recent_messages_for_group_fn=recent_messages_for_group,
         legacy_recent_messages=_recent_messages,
     )
+    if changed:
+        metrics.set_context_messages(group_id, len(recent_messages_for_group(group_id)))
     if changed and CONTEXT_PERSIST_ENABLED:
         save_context_cache()
 
@@ -3138,6 +3150,8 @@ runtime_stat(
     allowed_group_count=len(ALLOWED_GROUP_IDS),
     target_group_id=TARGET_GROUP_ID,
     runtime_stats_enabled=RUNTIME_STATS_ENABLED,
+    prometheus_enabled=PROMETHEUS_ENABLED,
+    prometheus_group_id_label_enabled=PROMETHEUS_INCLUDE_GROUP_ID_LABEL,
     context_persist_enabled=CONTEXT_PERSIST_ENABLED,
     proactive_enabled=PROACTIVE_ENABLED,
     group_sessions_enabled=HERMES_GROUP_SESSIONS_ENABLED,
@@ -3160,6 +3174,13 @@ async def health(req: Request) -> dict[str, Any]:
         onebot_http_url=ONEBOT_HTTP_URL,
         detailed=detailed,
     )
+
+
+@app.get("/metrics", response_class=PlainTextResponse)
+async def prometheus_metrics() -> PlainTextResponse:
+    if not PROMETHEUS_ENABLED:
+        raise HTTPException(status_code=404, detail="metrics disabled")
+    return PlainTextResponse(metrics.generate_latest(), media_type=metrics.CONTENT_TYPE)
 
 
 def build_search_command_prompt(query: str, group_id: int | None = None) -> str:
