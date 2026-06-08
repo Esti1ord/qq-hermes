@@ -77,6 +77,7 @@ def test_build_direct_prompt_request_sections_and_metadata():
         "recent_context",
         "quoted_context",
         "current_message",
+        "response_strategy",
         "media_context",
         "sender_profile",
         "mentioned_profiles",
@@ -86,6 +87,7 @@ def test_build_direct_prompt_request_sections_and_metadata():
     ]
     metadata = {section.key: (section.source, section.priority) for section in request.sections}
     assert metadata["current_message"] == ("current_message", "critical")
+    assert metadata["response_strategy"] == ("runtime_policy", "high")
     assert metadata["recent_context"] == ("recent_context", "high")
     assert metadata["summary_context"] == ("generated_summary", "low")
     assert metadata["self_learning"] == ("self_learning", "low")
@@ -100,8 +102,8 @@ def test_build_direct_prompt_renders_existing_direct_guidance():
     assert "## 当前被 @ 的消息" in prompt
     assert "优先级：critical" in prompt
     assert "内容：@Esti 今晚吃啥" in prompt
-    assert "## 群聊近况摘要" in prompt
-    assert "优先级：low" in prompt
+    assert "## 本次回复策略" in prompt
+    assert "本次风格：自然短句" in prompt
     assert "普通聊天不要声称自己正在联网搜索" in prompt
     assert "只输出要发到群里的正文。" in prompt
 
@@ -124,11 +126,13 @@ def test_build_proactive_prompt_request_sections_and_metadata():
         "runtime_date",
         "summary_context",
         "recent_context",
+        "decision_strategy",
         "trigger_reasons",
         "persona",
     ]
     metadata = {section.key: (section.source, section.priority) for section in request.sections}
     assert metadata["recent_context"] == ("recent_context", "critical")
+    assert metadata["decision_strategy"] == ("runtime_policy", "high")
     assert metadata["summary_context"] == ("generated_summary", "low")
     assert metadata["trigger_reasons"] == ("internal_diagnostic", "low")
     assert metadata["persona"] == ("persona", "medium")

@@ -74,6 +74,7 @@ DIRECT_SECTION_BUDGETS = {
     "recent_context": 4000,
     "quoted_context": 1600,
     "current_message": None,
+    "response_strategy": 700,
     "media_context": 1600,
     "sender_profile": 1200,
     "mentioned_profiles": 1200,
@@ -86,6 +87,7 @@ PROACTIVE_SECTION_BUDGETS = {
     "runtime_date": 200,
     "summary_context": 600,
     "recent_context": 3500,
+    "decision_strategy": 800,
     "trigger_reasons": 300,
     "persona": 1200,
 }
@@ -224,7 +226,7 @@ def build_direct_prompt_request(
     learning_context: str = "（暂无群内用语/风格学习提示）",
 ) -> PromptRequest:
     clipped = str(user_text or "")[:max_prompt_chars]
-    rules = [*DIRECT_RULES, f"信息不足可以简短追问；本次风格：{style_hint}"]
+    rules = list(DIRECT_RULES)
     sections = [
         PromptSection(
             key="runtime_date",
@@ -265,6 +267,18 @@ def build_direct_prompt_request(
             source="current_message",
             priority="critical",
             instruction="本次回复的核心任务。",
+        ),
+        PromptSection(
+            key="response_strategy",
+            title="本次回复策略",
+            body=(
+                f"本次风格：{style_hint}\n"
+                "先判断当前消息是在提问、吐槽、接梗还是回复上一条；只回答这一次需要接的话。\n"
+                "如果信息不足可以简短追问；如果只是普通群聊接梗，优先自然短句，不要写成分析报告。"
+            ),
+            source="runtime_policy",
+            priority="high",
+            instruction="把规则落到本次消息上，决定回复形态和长度。",
         ),
         PromptSection(
             key="media_context",
@@ -462,6 +476,18 @@ def build_proactive_prompt_request(
             source="recent_context",
             priority="critical",
             instruction="带权重衰减；逐条理解，不要合并不同发言人。",
+        ),
+        PromptSection(
+            key="decision_strategy",
+            title="主动发言判断策略",
+            body=(
+                f"触发信号：{trigger_reasons}\n"
+                "先判断最近两三条高权重群友消息是否还留有自然接话点。\n"
+                "有接话点才输出一句群友式短句；没有接话点、只能解释规则、只能复读旧话题或旧梗时，按输出要求保持沉默。"
+            ),
+            source="runtime_policy",
+            priority="high",
+            instruction="把触发信号转化为是否发言的决定；触发信号不是必须提到的话题。",
         ),
         PromptSection(
             key="trigger_reasons",
