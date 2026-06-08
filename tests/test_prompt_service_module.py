@@ -160,8 +160,24 @@ def test_commands_build_chat_prompt_delegates_to_prompt_service():
     assert commands.build_chat_prompt(**DIRECT_PROMPT_KWARGS) == prompt_service.build_chat_prompt(**DIRECT_PROMPT_KWARGS)
 
 
+def test_commands_build_rendered_chat_prompt_exposes_diagnostics():
+    rendered = commands.build_rendered_chat_prompt(**DIRECT_PROMPT_KWARGS)
+
+    assert rendered.text == prompt_service.build_chat_prompt(**DIRECT_PROMPT_KWARGS)
+    assert rendered.char_count == len(rendered.text)
+    assert rendered_section_by_key(rendered, "current_message").priority == "critical"
+
+
 def test_commands_build_proactive_prompt_delegates_to_prompt_service():
     assert commands.build_proactive_prompt(**PROACTIVE_PROMPT_KWARGS) == prompt_service.build_proactive_prompt(**PROACTIVE_PROMPT_KWARGS)
+
+
+def test_commands_build_rendered_proactive_prompt_exposes_diagnostics():
+    rendered = commands.build_rendered_proactive_prompt(**PROACTIVE_PROMPT_KWARGS)
+
+    assert rendered.text == prompt_service.build_proactive_prompt(**PROACTIVE_PROMPT_KWARGS)
+    assert rendered.char_count == len(rendered.text)
+    assert rendered_section_by_key(rendered, "recent_context").priority == "critical"
 
 
 def test_render_prompt_exposes_section_diagnostics_without_truncation():

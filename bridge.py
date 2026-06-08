@@ -1696,13 +1696,44 @@ def self_learning_context_for_prompt(group_id: int | None = None) -> str:
     )
 
 
+def prompt_render_diagnostics(kind: str, group_id: int | None, rendered: Any) -> dict[str, Any]:
+    sections = []
+    truncated_sections = []
+    for section in getattr(rendered, "sections", ()):
+        item = {
+            "key": section.key,
+            "source": section.source,
+            "priority": section.priority,
+            "original_char_count": section.original_char_count,
+            "rendered_char_count": section.rendered_char_count,
+            "budget_chars": section.budget_chars,
+            "truncated": section.truncated,
+        }
+        sections.append(item)
+        if section.truncated:
+            truncated_sections.append(section.key)
+    return {
+        "type": "prompt_rendered",
+        "kind": kind,
+        "group_id": group_id,
+        "char_count": getattr(rendered, "char_count", len(getattr(rendered, "text", ""))),
+        "section_count": len(sections),
+        "truncated_sections": truncated_sections,
+        "sections": sections,
+    }
+
+
+def log_prompt_render(kind: str, group_id: int | None, rendered: Any) -> None:
+    log(prompt_render_diagnostics(kind, group_id, rendered))
+
+
 def build_prompt(event: dict[str, Any], user_text: str, media_context: str = "（当前消息没有图片识别结果）") -> str:
     nick = _sender_name(event)
     user_id = event.get("user_id")
     group_id = group_id_from_event(event)
     clipped = user_text[:MAX_PROMPT_CHARS]
     people_file = group_people_file_for_prompt(group_id)
-    return commands.build_chat_prompt(
+    rendered = commands.build_rendered_chat_prompt(
         group_id=group_id,
         date_context=current_date_context(),
         context_summaries=format_context_summaries(group_id),
@@ -1722,10 +1753,13 @@ def build_prompt(event: dict[str, Any], user_text: str, media_context: str = "�
         media_context=media_context,
         learning_context=self_learning_context_for_prompt(group_id),
     )
+    log_prompt_render("direct", group_id, rendered)
+    return rendered.text
+
 
 def build_proactive_prompt(event: dict[str, Any], reasons: list[str]) -> str:
     group_id = group_id_from_event(event)
-    return commands.build_proactive_prompt(
+    rendered = commands.build_rendered_proactive_prompt(
         group_id=group_id,
         date_context=current_date_context(),
         context_summaries=format_context_summaries(group_id),
@@ -1733,6 +1767,8 @@ def build_proactive_prompt(event: dict[str, Any], reasons: list[str]) -> str:
         persona=normal_chat_persona_bundle_for_prompt(group_id),
         reasons=reasons,
     )
+    log_prompt_render("proactive", group_id, rendered)
+    return rendered.text
 
 
 def ocr_enabled_for_route(route: str) -> bool:

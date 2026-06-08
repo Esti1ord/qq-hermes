@@ -119,11 +119,26 @@ def _truncate_text(text: str, budget_chars: int | None) -> tuple[str, bool]:
     return f"{text[:keep]}{TRUNCATION_SUFFIX}", True
 
 
+PROMPT_RENDER_INTRO = "你正在为 QQ 群聊生成回复。请按各 section 的来源、优先级和使用说明判断权重。"
+DIRECT_RENDER_INTRO = "你在 QQ 群里以 Esti 的口吻回复被 @ 的消息，优先接当前上下文，别机械背人设。"
+PROACTIVE_RENDER_INTRO = "你是 QQ 群友 Esti，判断是否主动接一句话；这不是被 @ 回复，不合适就保持沉默。"
+
+
+def _replace_render_intro(rendered: RenderedPrompt, intro: str) -> RenderedPrompt:
+    text = rendered.text.replace(PROMPT_RENDER_INTRO, intro, 1)
+    return RenderedPrompt(
+        text=text,
+        section_keys=rendered.section_keys,
+        char_count=len(text),
+        sections=rendered.sections,
+    )
+
+
 def render_prompt(request: PromptRequest) -> RenderedPrompt:
     """Render a PromptRequest into a Hermes-compatible prompt string."""
     diagnostics: list[RenderedSection] = []
     lines: list[str] = [
-        "你正在为 QQ 群聊生成回复。请按各 section 的来源、优先级和使用说明判断权重。",
+        PROMPT_RENDER_INTRO,
         f"类型：{request.kind}",
         f"群号：{request.group_id}",
         f"当前日期：{request.date_context}",
@@ -311,6 +326,50 @@ def build_direct_prompt_request(
     )
 
 
+def build_rendered_chat_prompt(
+    *,
+    group_id: int | None,
+    date_context: str,
+    context_summaries: str,
+    recent_context: str,
+    reply_context: str,
+    reply_to_bot_note: str,
+    nick: str,
+    user_id: object,
+    mentioned_labels: str,
+    user_text: str,
+    person_profile: str,
+    mentioned_profiles: str,
+    related_profiles: str,
+    persona: str,
+    max_prompt_chars: int,
+    style_hint: str,
+    media_context: str = "（当前消息没有图片识别结果）",
+    learning_context: str = "（暂无群内用语/风格学习提示）",
+) -> RenderedPrompt:
+    request = build_direct_prompt_request(
+        group_id=group_id,
+        date_context=date_context,
+        context_summaries=context_summaries,
+        recent_context=recent_context,
+        reply_context=reply_context,
+        reply_to_bot_note=reply_to_bot_note,
+        nick=nick,
+        user_id=user_id,
+        mentioned_labels=mentioned_labels,
+        user_text=user_text,
+        person_profile=person_profile,
+        mentioned_profiles=mentioned_profiles,
+        related_profiles=related_profiles,
+        persona=persona,
+        max_prompt_chars=max_prompt_chars,
+        style_hint=style_hint,
+        media_context=media_context,
+        learning_context=learning_context,
+    )
+    return _replace_render_intro(render_prompt(request), DIRECT_RENDER_INTRO)
+
+
 def build_chat_prompt(
     *,
     group_id: int | None,
@@ -332,7 +391,7 @@ def build_chat_prompt(
     media_context: str = "（当前消息没有图片识别结果）",
     learning_context: str = "（暂无群内用语/风格学习提示）",
 ) -> str:
-    request = build_direct_prompt_request(
+    return build_rendered_chat_prompt(
         group_id=group_id,
         date_context=date_context,
         context_summaries=context_summaries,
@@ -351,10 +410,7 @@ def build_chat_prompt(
         style_hint=style_hint,
         media_context=media_context,
         learning_context=learning_context,
-    )
-    intro = "你在 QQ 群里以 Esti 的口吻回复被 @ 的消息，优先接当前上下文，别机械背人设。"
-    rendered = render_prompt(request)
-    return rendered.text.replace("你正在为 QQ 群聊生成回复。请按各 section 的来源、优先级和使用说明判断权重。", intro, 1)
+    ).text
 
 
 PROACTIVE_RULES = [
@@ -434,6 +490,26 @@ def build_proactive_prompt_request(
     )
 
 
+def build_rendered_proactive_prompt(
+    *,
+    group_id: int | None,
+    date_context: str,
+    context_summaries: str,
+    recent_context: str,
+    persona: str,
+    reasons: list[str],
+) -> RenderedPrompt:
+    request = build_proactive_prompt_request(
+        group_id=group_id,
+        date_context=date_context,
+        context_summaries=context_summaries,
+        recent_context=recent_context,
+        persona=persona,
+        reasons=reasons,
+    )
+    return _replace_render_intro(render_prompt(request), PROACTIVE_RENDER_INTRO)
+
+
 def build_proactive_prompt(
     *,
     group_id: int | None,
@@ -443,14 +519,11 @@ def build_proactive_prompt(
     persona: str,
     reasons: list[str],
 ) -> str:
-    request = build_proactive_prompt_request(
+    return build_rendered_proactive_prompt(
         group_id=group_id,
         date_context=date_context,
         context_summaries=context_summaries,
         recent_context=recent_context,
         persona=persona,
         reasons=reasons,
-    )
-    intro = "你是 QQ 群友 Esti，判断是否主动接一句话；这不是被 @ 回复，不合适就保持沉默。"
-    rendered = render_prompt(request)
-    return rendered.text.replace("你正在为 QQ 群聊生成回复。请按各 section 的来源、优先级和使用说明判断权重。", intro, 1)
+    ).text

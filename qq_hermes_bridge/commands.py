@@ -37,7 +37,7 @@ def append_context_line_with_budget(lines: list[str], line: str, budget: int) ->
     return False
 
 
-def build_chat_prompt(
+def build_rendered_chat_prompt(
     *,
     group_id: int | None,
     date_context: str,
@@ -57,8 +57,8 @@ def build_chat_prompt(
     style_hint: str,
     media_context: str = "（当前消息没有图片识别结果）",
     learning_context: str = "（暂无群内用语/风格学习提示）",
-) -> str:
-    return prompt_service.build_chat_prompt(
+) -> prompt_service.RenderedPrompt:
+    return prompt_service.build_rendered_chat_prompt(
         group_id=group_id,
         date_context=date_context,
         context_summaries=context_summaries,
@@ -80,6 +80,68 @@ def build_chat_prompt(
     )
 
 
+def build_chat_prompt(
+    *,
+    group_id: int | None,
+    date_context: str,
+    context_summaries: str,
+    recent_context: str,
+    reply_context: str,
+    reply_to_bot_note: str,
+    nick: str,
+    user_id: Any,
+    mentioned_labels: str,
+    user_text: str,
+    person_profile: str,
+    mentioned_profiles: str,
+    related_profiles: str,
+    persona: str,
+    max_prompt_chars: int,
+    style_hint: str,
+    media_context: str = "（当前消息没有图片识别结果）",
+    learning_context: str = "（暂无群内用语/风格学习提示）",
+) -> str:
+    return build_rendered_chat_prompt(
+        group_id=group_id,
+        date_context=date_context,
+        context_summaries=context_summaries,
+        recent_context=recent_context,
+        reply_context=reply_context,
+        reply_to_bot_note=reply_to_bot_note,
+        nick=nick,
+        user_id=user_id,
+        mentioned_labels=mentioned_labels,
+        user_text=user_text,
+        person_profile=person_profile,
+        mentioned_profiles=mentioned_profiles,
+        related_profiles=related_profiles,
+        persona=persona,
+        max_prompt_chars=max_prompt_chars,
+        style_hint=style_hint,
+        media_context=media_context,
+        learning_context=learning_context,
+    ).text
+
+
+def build_rendered_proactive_prompt(
+    *,
+    group_id: int | None,
+    date_context: str,
+    context_summaries: str,
+    recent_context: str,
+    persona: str,
+    reasons: list[str],
+) -> prompt_service.RenderedPrompt:
+    return prompt_service.build_rendered_proactive_prompt(
+        group_id=group_id,
+        date_context=date_context,
+        context_summaries=context_summaries,
+        recent_context=recent_context,
+        persona=persona,
+        reasons=reasons,
+    )
+
+
 def build_proactive_prompt(
     *,
     group_id: int | None,
@@ -89,14 +151,14 @@ def build_proactive_prompt(
     persona: str,
     reasons: list[str],
 ) -> str:
-    return prompt_service.build_proactive_prompt(
+    return build_rendered_proactive_prompt(
         group_id=group_id,
         date_context=date_context,
         context_summaries=context_summaries,
         recent_context=recent_context,
         persona=persona,
         reasons=reasons,
-    )
+    ).text
 
 
 def build_context_command_reply(

@@ -166,6 +166,33 @@ def test_proactive_prompt_is_separate_and_context_first():
     assert "如果不发言，只输出 <SILENT>" in prompt
 
 
+def test_proactive_prompt_logs_section_diagnostics(monkeypatch):
+    bridge = load_bridge_module()
+    configure_proactive(bridge)
+    bridge._recent_messages_by_group.clear()
+    bridge._context_summaries_by_group.clear()
+    logs = []
+
+    monkeypatch.setattr(bridge, "log", lambda obj: logs.append(obj))
+    monkeypatch.setattr(bridge, "format_context_summaries", lambda group_id=None: "摘" * 1000)
+    monkeypatch.setattr(bridge, "normal_chat_persona_bundle_for_prompt", lambda group_id: "人设")
+
+    prompt = bridge.build_proactive_prompt(make_event(text="有没有人救一下"), ["burst"])
+
+    record = next(item for item in logs if item["type"] == "prompt_rendered")
+    assert record["kind"] == "proactive"
+    assert record["group_id"] == 975805598
+    assert record["char_count"] == len(prompt)
+    assert record["truncated_sections"] == ["summary_context"]
+    summary = next(section for section in record["sections"] if section["key"] == "summary_context")
+    recent = next(section for section in record["sections"] if section["key"] == "recent_context")
+    assert summary["budget_chars"] == 600
+    assert summary["truncated"] is True
+    assert recent["priority"] == "critical"
+    assert recent["truncated"] is False
+    assert "prompt" not in record
+
+
 def test_proactive_context_decay_prioritizes_recent_human_messages():
     bridge = load_bridge_module()
     configure_proactive(bridge)

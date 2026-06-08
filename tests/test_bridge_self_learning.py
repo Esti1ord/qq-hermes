@@ -120,6 +120,41 @@ def test_build_prompt_includes_group_self_learning_context(monkeypatch, tmp_path
     assert "离谱" in prompt
 
 
+def test_build_prompt_logs_section_diagnostics_without_prompt_text(monkeypatch, tmp_path):
+    bridge = load_bridge_module()
+    configure_bridge(bridge, tmp_path)
+    logs = []
+
+    monkeypatch.setattr(bridge, "log", lambda obj: logs.append(obj))
+    monkeypatch.setattr(bridge, "current_date_context", lambda: "今天")
+    monkeypatch.setattr(bridge, "format_context_summaries", lambda group_id=None: "摘" * 1500)
+    monkeypatch.setattr(bridge, "format_recent_context", lambda group_id=None: "最近")
+    monkeypatch.setattr(bridge, "reply_context_from_event", lambda event: "引用")
+    monkeypatch.setattr(bridge, "is_reply_to_me", lambda event: False)
+    monkeypatch.setattr(bridge, "mentioned_people_labels", lambda event: [])
+    monkeypatch.setattr(bridge, "group_people_file_for_prompt", lambda group_id: None)
+    monkeypatch.setattr(bridge, "normal_chat_persona_bundle_for_prompt", lambda group_id: "人设")
+    monkeypatch.setattr(bridge, "style_hint_for", lambda event: "短句")
+
+    prompt = bridge.build_prompt(make_group_event("Esti 怎么看", user_id=222, message_id=2003), "Esti 怎么看")
+
+    record = next(item for item in logs if item["type"] == "prompt_rendered")
+    assert record["kind"] == "direct"
+    assert record["group_id"] == 975805598
+    assert record["char_count"] == len(prompt)
+    assert record["truncated_sections"] == ["summary_context"]
+    summary = next(section for section in record["sections"] if section["key"] == "summary_context")
+    current = next(section for section in record["sections"] if section["key"] == "current_message")
+    assert summary["source"] == "generated_summary"
+    assert summary["priority"] == "low"
+    assert summary["budget_chars"] == 1000
+    assert summary["truncated"] is True
+    assert current["priority"] == "critical"
+    assert current["budget_chars"] is None
+    assert "text" not in summary
+    assert "prompt" not in record
+
+
 def test_remember_message_uses_text_without_ocr_for_learning(tmp_path):
     bridge = load_bridge_module()
     configure_bridge(bridge, tmp_path)
