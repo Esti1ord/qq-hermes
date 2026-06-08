@@ -233,6 +233,21 @@ def test_truncate_text_respects_budget_and_marks_truncation():
     assert truncated is False
 
 
+def test_direct_recent_context_truncation_preserves_latest_tail():
+    kwargs = dict(DIRECT_PROMPT_KWARGS)
+    kwargs["recent_context"] = "较早上下文" + ("旧" * 4200) + "最新关键消息"
+    request = prompt_service.build_direct_prompt_request(**kwargs)
+
+    rendered = prompt_service.render_prompt(request)
+
+    recent = rendered_section_by_key(rendered, "recent_context")
+    assert recent.budget_chars == 4000
+    assert recent.truncated is True
+    assert recent.rendered_char_count == 4000
+    assert "最新关键消息" in rendered.text
+    assert "较早上下文" not in rendered.text
+
+
 def test_direct_low_priority_sections_are_truncated_but_current_message_is_not():
     kwargs = dict(DIRECT_PROMPT_KWARGS)
     kwargs["context_summaries"] = "摘" * 1500
@@ -274,6 +289,20 @@ def test_proactive_summary_budget_is_smaller_than_direct_summary_budget():
     assert direct_summary.rendered_char_count == 1000
     assert proactive_summary.rendered_char_count == 600
 
+
+def test_proactive_recent_context_truncation_preserves_high_weight_prefix():
+    kwargs = dict(PROACTIVE_PROMPT_KWARGS)
+    kwargs["recent_context"] = "高权重：最新群友消息" + ("近" * 3600) + "低权重尾部旧话题"
+    request = prompt_service.build_proactive_prompt_request(**kwargs)
+
+    rendered = prompt_service.render_prompt(request)
+
+    recent = rendered_section_by_key(rendered, "recent_context")
+    assert recent.budget_chars == 3500
+    assert recent.truncated is True
+    assert recent.rendered_char_count == 3500
+    assert "高权重：最新群友消息" in rendered.text
+    assert "低权重尾部旧话题" not in rendered.text
 
 def test_proactive_prompt_keeps_silent_contract_once_when_sections_truncate():
     kwargs = dict(PROACTIVE_PROMPT_KWARGS)

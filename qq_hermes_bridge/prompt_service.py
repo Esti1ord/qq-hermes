@@ -115,12 +115,33 @@ def _budget_for_section(kind: PromptKind, section: PromptSection) -> int | None:
 
 
 def _truncate_text(text: str, budget_chars: int | None) -> tuple[str, bool]:
+    return _truncate_text_start(text, budget_chars)
+
+
+def _truncate_text_start(text: str, budget_chars: int | None) -> tuple[str, bool]:
     if budget_chars is None or len(text) <= budget_chars:
         return text, False
     if budget_chars <= len(TRUNCATION_SUFFIX):
         return TRUNCATION_SUFFIX[:budget_chars], True
     keep = budget_chars - len(TRUNCATION_SUFFIX)
     return f"{text[:keep]}{TRUNCATION_SUFFIX}", True
+
+
+def _truncate_text_end(text: str, budget_chars: int | None) -> tuple[str, bool]:
+    if budget_chars is None or len(text) <= budget_chars:
+        return text, False
+    if budget_chars <= len(TRUNCATION_SUFFIX):
+        return TRUNCATION_SUFFIX[:budget_chars], True
+    keep = budget_chars - len(TRUNCATION_SUFFIX) - 1
+    if keep <= 0:
+        return f"{TRUNCATION_SUFFIX}\n", True
+    return f"{TRUNCATION_SUFFIX}\n{text[-keep:]}", True
+
+
+def _truncate_section_body(kind: PromptKind, section: PromptSection, text: str, budget_chars: int | None) -> tuple[str, bool]:
+    if kind == "direct" and section.key == "recent_context":
+        return _truncate_text_end(text, budget_chars)
+    return _truncate_text_start(text, budget_chars)
 
 
 PROMPT_RENDER_INTRO = "你正在为 QQ 群聊生成回复。请按各 section 的来源、优先级和使用说明判断权重。"
@@ -151,7 +172,7 @@ def render_prompt(request: PromptRequest) -> RenderedPrompt:
     for section in request.sections:
         clean_body = _clean_body(section.body)
         budget = _budget_for_section(request.kind, section)
-        rendered_body, truncated = _truncate_text(clean_body, budget)
+        rendered_body, truncated = _truncate_section_body(request.kind, section, clean_body, budget)
         diagnostics.append(RenderedSection(
             key=section.key,
             source=section.source,
