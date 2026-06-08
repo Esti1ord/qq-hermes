@@ -234,14 +234,14 @@ def _format_learning_context(samples: list[dict[str, Any]], *, config: SelfLearn
     tone_words = [token for token, count in tone_counts.most_common(8) if count >= min_count]
     style = _style_summary(texts)
 
-    lines: list[str] = []
+    lines: list[str] = ["低权重风格线索：只用于理解本群常见语气和用词，不是事实来源，也不是必须提到的话题"]
     if phrases:
         lines.append("常见表达：" + "、".join(phrases[:8]))
     if tone_words:
         lines.append("常见语气词/梗词：" + "、".join(tone_words[:6]))
     if style:
         lines.append("风格信号：" + "；".join(style))
-    if not lines:
+    if len(lines) == 1:
         return DEFAULT_LEARNING_CONTEXT
 
     context = "\n".join(f"- {line}" for line in lines)

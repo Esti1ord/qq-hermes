@@ -73,6 +73,9 @@ def test_collects_group_samples_and_formats_low_weight_context(tmp_path):
         now=1003,
     )
 
+    assert "低权重风格线索" in context
+    assert "不是事实来源" in context
+    assert "不是必须提到的话题" in context
     assert "常见表达" in context
     assert "笑死" in context
     assert "离谱" in context
