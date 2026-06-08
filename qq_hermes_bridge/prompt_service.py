@@ -67,6 +67,7 @@ class RenderedPrompt:
 
 
 TRUNCATION_SUFFIX = "\n……（本 section 因长度限制已截断）"
+DIRECT_RECENT_CONTEXT_HEAD_LINES = 1
 
 DIRECT_SECTION_BUDGETS = {
     "runtime_date": 200,
@@ -138,9 +139,26 @@ def _truncate_text_end(text: str, budget_chars: int | None) -> tuple[str, bool]:
     return f"{TRUNCATION_SUFFIX}\n{text[-keep:]}", True
 
 
+def _truncate_text_head_tail(text: str, budget_chars: int | None, *, head_lines: int) -> tuple[str, bool]:
+    if budget_chars is None or len(text) <= budget_chars:
+        return text, False
+    if budget_chars <= len(TRUNCATION_SUFFIX):
+        return TRUNCATION_SUFFIX[:budget_chars], True
+    lines = text.splitlines()
+    head = "\n".join(lines[:max(0, head_lines)]).strip()
+    if not head:
+        return _truncate_text_end(text, budget_chars)
+    separator = f"{TRUNCATION_SUFFIX}\n"
+    head_prefix = f"{head}\n"
+    tail_budget = budget_chars - len(head_prefix) - len(separator)
+    if tail_budget <= 0:
+        return _truncate_text_start(head, budget_chars)
+    return f"{head_prefix}{separator}{text[-tail_budget:]}", True
+
+
 def _truncate_section_body(kind: PromptKind, section: PromptSection, text: str, budget_chars: int | None) -> tuple[str, bool]:
     if kind == "direct" and section.key == "recent_context":
-        return _truncate_text_end(text, budget_chars)
+        return _truncate_text_head_tail(text, budget_chars, head_lines=DIRECT_RECENT_CONTEXT_HEAD_LINES)
     return _truncate_text_start(text, budget_chars)
 
 
