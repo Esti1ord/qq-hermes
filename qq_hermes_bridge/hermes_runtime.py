@@ -80,8 +80,33 @@ def extract_session_id(output: str) -> str:
     return match.group(1) if match else ""
 
 
+_XML_TOOL_CALL_TAGS = (
+    "function_calls",
+    "antml:function_calls",
+    "invoke",
+    "antml:invoke",
+    "parameter",
+    "antml:parameter",
+)
+
+
+def strip_tool_call_xml(output: str) -> str:
+    """Remove XML tool-call markup that may leak from Hermes raw output."""
+    clean = output
+    # Remove matched pairs first (most specific)
+    for tag in _XML_TOOL_CALL_TAGS:
+        pattern = re.compile(rf"<{re.escape(tag)}[^>]*>.*?</{re.escape(tag)}>", re.DOTALL | re.IGNORECASE)
+        clean = pattern.sub("", clean)
+    # Then remove any remaining standalone tags (opening or closing)
+    for tag in _XML_TOOL_CALL_TAGS:
+        pattern = re.compile(rf"</?{re.escape(tag)}[^>]*>", re.IGNORECASE)
+        clean = pattern.sub("", clean)
+    return clean.strip()
+
+
 def strip_session_footer(output: str) -> str:
     clean = strip_cli_warning_lines(output)
+    clean = strip_tool_call_xml(clean)
     return re.sub(r"\n+session_id:\s*[A-Za-z0-9_\-]+\s*$", "", clean).strip()
 
 
