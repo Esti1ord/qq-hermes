@@ -1,0 +1,4 @@
+{"file":".trellis/tasks/06-08-refactor-bridge-py-and-add-prometheus-metrics/prd.md","reason":"Verification must check the implemented behavior against requirements and acceptance criteria."}
+{"file":".trellis/spec/backend/index.md","reason":"Backend verification should follow available project guidelines."}
+{"file":".trellis/spec/guides/code-reuse-thinking-guide.md","reason":"Review for duplicated config/metrics logic introduced during refactor."}
+{"file":".trellis/spec/guides/cross-layer-thinking-guide.md","reason":"Review cross-layer contracts for config loading, FastAPI routes, metrics exposition, and docs."}
