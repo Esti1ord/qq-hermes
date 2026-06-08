@@ -83,6 +83,7 @@ def test_build_direct_prompt_request_sections_and_metadata():
         "mentioned_profiles",
         "related_profiles",
         "self_learning",
+        "style_examples",
         "persona",
     ]
     metadata = {section.key: (section.source, section.priority) for section in request.sections}
@@ -91,6 +92,7 @@ def test_build_direct_prompt_request_sections_and_metadata():
     assert metadata["recent_context"] == ("recent_context", "high")
     assert metadata["summary_context"] == ("generated_summary", "low")
     assert metadata["self_learning"] == ("self_learning", "low")
+    assert metadata["style_examples"] == ("runtime_policy", "low")
     assert metadata["persona"] == ("persona", "medium")
     assert request.output_contract == "只输出要发到群里的正文。"
 
@@ -104,6 +106,10 @@ def test_build_direct_prompt_renders_existing_direct_guidance():
     assert "内容：@Esti 今晚吃啥" in prompt
     assert "## 本次回复策略" in prompt
     assert "本次风格：自然短句" in prompt
+    assert "## 回复风格样例与反例" in prompt
+    assert "好例：" in prompt
+    assert "坏例：" in prompt
+    assert "<SILENT>" not in prompt
     assert "普通聊天不要声称自己正在联网搜索" in prompt
     assert "只输出要发到群里的正文。" in prompt
 
@@ -128,6 +134,7 @@ def test_build_proactive_prompt_request_sections_and_metadata():
         "recent_context",
         "decision_strategy",
         "trigger_reasons",
+        "proactive_examples",
         "persona",
     ]
     metadata = {section.key: (section.source, section.priority) for section in request.sections}
@@ -135,6 +142,7 @@ def test_build_proactive_prompt_request_sections_and_metadata():
     assert metadata["decision_strategy"] == ("runtime_policy", "high")
     assert metadata["summary_context"] == ("generated_summary", "low")
     assert metadata["trigger_reasons"] == ("internal_diagnostic", "low")
+    assert metadata["proactive_examples"] == ("runtime_policy", "low")
     assert metadata["persona"] == ("persona", "medium")
     assert request.output_contract == "只输出要发到群里的内容；如果不发言，只输出 <SILENT> 这个标记。"
 
@@ -146,6 +154,9 @@ def test_build_proactive_prompt_renders_silent_contract_once():
     assert "## 群聊上下文" in prompt
     assert "优先级：critical" in prompt
     assert "## 触发原因" in prompt
+    assert "## 主动发言样例与反例" in prompt
+    assert "可发言：" in prompt
+    assert "应沉默：" in prompt
     assert "来源：internal_diagnostic" in prompt
     assert "burst、open_question" in prompt
     assert prompt.count("<SILENT>") == 1
@@ -170,6 +181,10 @@ def test_commands_build_rendered_chat_prompt_exposes_diagnostics():
     assert rendered.text == prompt_service.build_chat_prompt(**DIRECT_PROMPT_KWARGS)
     assert rendered.char_count == len(rendered.text)
     assert rendered_section_by_key(rendered, "current_message").priority == "critical"
+    style = rendered_section_by_key(rendered, "style_examples")
+    assert style.budget_chars == 900
+    assert style.truncated is False
+    assert "<SILENT>" not in rendered.text
 
 
 def test_commands_build_proactive_prompt_delegates_to_prompt_service():
@@ -182,6 +197,10 @@ def test_commands_build_rendered_proactive_prompt_exposes_diagnostics():
     assert rendered.text == prompt_service.build_proactive_prompt(**PROACTIVE_PROMPT_KWARGS)
     assert rendered.char_count == len(rendered.text)
     assert rendered_section_by_key(rendered, "recent_context").priority == "critical"
+    examples = rendered_section_by_key(rendered, "proactive_examples")
+    assert examples.budget_chars == 800
+    assert examples.truncated is False
+    assert rendered.text.count("<SILENT>") == 1
 
 
 def test_render_prompt_exposes_section_diagnostics_without_truncation():
