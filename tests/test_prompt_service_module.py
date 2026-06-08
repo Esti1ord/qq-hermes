@@ -104,3 +104,46 @@ def test_build_direct_prompt_renders_existing_direct_guidance():
     assert "优先级：low" in prompt
     assert "普通聊天不要声称自己正在联网搜索" in prompt
     assert "只输出要发到群里的正文。" in prompt
+
+
+PROACTIVE_PROMPT_KWARGS = dict(
+    group_id=975805598,
+    date_context="当前日期：2026-06-08（周一，CST+0800）",
+    context_summaries="- 大家刚才在聊晚饭",
+    recent_context="高权重：最近群友消息\n[高权重 1] 内容：有人吃火锅吗",
+    persona="Esti 是群友式口吻",
+    reasons=["burst", "open_question"],
+)
+
+
+def test_build_proactive_prompt_request_sections_and_metadata():
+    request = prompt_service.build_proactive_prompt_request(**PROACTIVE_PROMPT_KWARGS)
+
+    assert request.kind == "proactive"
+    assert [section.key for section in request.sections] == [
+        "runtime_date",
+        "summary_context",
+        "recent_context",
+        "trigger_reasons",
+        "persona",
+    ]
+    metadata = {section.key: (section.source, section.priority) for section in request.sections}
+    assert metadata["recent_context"] == ("recent_context", "critical")
+    assert metadata["summary_context"] == ("generated_summary", "low")
+    assert metadata["trigger_reasons"] == ("internal_diagnostic", "low")
+    assert metadata["persona"] == ("persona", "medium")
+    assert request.output_contract == "只输出要发到群里的内容；如果不发言，只输出 <SILENT> 这个标记。"
+
+
+def test_build_proactive_prompt_renders_silent_contract_once():
+    prompt = prompt_service.build_proactive_prompt(**PROACTIVE_PROMPT_KWARGS)
+
+    assert "你是 QQ 群友 Esti，判断是否主动接一句话" in prompt
+    assert "## 群聊上下文" in prompt
+    assert "优先级：critical" in prompt
+    assert "## 触发原因" in prompt
+    assert "来源：internal_diagnostic" in prompt
+    assert "burst、open_question" in prompt
+    assert prompt.count("<SILENT>") == 1
+    assert "空输出是正确的" not in prompt
+    assert "不要解释沉默原因或输出规则" in prompt

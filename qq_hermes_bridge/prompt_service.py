@@ -281,3 +281,102 @@ def build_chat_prompt(
     intro = "你在 QQ 群里以 Esti 的口吻回复被 @ 的消息，优先接当前上下文，别机械背人设。"
     rendered = render_prompt(request)
     return rendered.text.replace("你正在为 QQ 群聊生成回复。请按各 section 的来源、优先级和使用说明判断权重。", intro, 1)
+
+
+PROACTIVE_RULES = [
+    "触发原因只是内部诊断，不是要求你必须提到的主题。",
+    "主动发言优先围绕高权重最近群友消息，判断现在有没有自然接话点；低权重旧消息和近况摘要只作背景，不要把已经过去的话题强行拉回。",
+    "主动接话时判断事件主体要保守：最近突然出现的昵称或短句吐槽，除非明确说明其参与事件，否则不要把原事件主体改成这个昵称；主体不确定就用“当事人/楼上/这波”泛称。",
+    "如果最近群友已经换话题，跟随新话题；如果只能重复旧关键词、旧梗或 Esti 之前的说法，就保持沉默。",
+    "如果不适合插话或实在没话接就保持沉默；不要解释沉默原因或输出规则，不要说自己没想好、没组织好、卡住了、等会再说。",
+    "如果适合插话但当前句子不好接，可以自然开一个很轻的小话题或抛一句群友式短梗；只输出一句自然群聊发言，最多两句。",
+    "敏感/吵架/隐私/违法也保持沉默。",
+    "主动发言和普通聊天都不要声称自己正在联网搜索、实时查询或查官方结果；需要实时信息时让群友使用 /search 命令。",
+    "标点风格强约束：少用句号和逗号；不要使用句号和引号；短回复可用空格代替逗号。",
+    "少 AI/客服腔；不主动自称 AI/机器人/助手；不主动 @ 人，不发链接，不泄露内部信息。",
+    "可承认自己是 Esti，但不要编造真人经历、位置、身份或线下行为。",
+]
+
+
+def build_proactive_prompt_request(
+    *,
+    group_id: int | None,
+    date_context: str,
+    context_summaries: str,
+    recent_context: str,
+    persona: str,
+    reasons: list[str],
+) -> PromptRequest:
+    trigger_reasons = "、".join(reasons) if reasons else "群聊气氛达到主动发言阈值"
+    sections = [
+        PromptSection(
+            key="runtime_date",
+            title="当前日期",
+            body=date_context,
+            source="runtime_policy",
+            priority="high",
+            instruction="用于解释今天、昨天、最近等相对时间。",
+        ),
+        PromptSection(
+            key="summary_context",
+            title="群聊近况摘要",
+            body=context_summaries,
+            source="generated_summary",
+            priority="low",
+            instruction="低权重长期记忆，只帮助理解群内背景；不要把这里当成必须复用的话题清单。",
+        ),
+        PromptSection(
+            key="recent_context",
+            title="群聊上下文",
+            body=recent_context,
+            source="recent_context",
+            priority="critical",
+            instruction="带权重衰减；逐条理解，不要合并不同发言人。",
+        ),
+        PromptSection(
+            key="trigger_reasons",
+            title="触发原因",
+            body=trigger_reasons,
+            source="internal_diagnostic",
+            priority="low",
+            instruction="内部诊断，不是要求必须提到的主题。",
+        ),
+        PromptSection(
+            key="persona",
+            title="基础人设与群聊提示词",
+            body=persona,
+            source="persona",
+            priority="medium",
+            instruction="弱约束；最近群友消息和自然接话点优先。",
+        ),
+    ]
+    return PromptRequest(
+        kind="proactive",
+        group_id=group_id,
+        date_context=date_context,
+        sections=sections,
+        rules=list(PROACTIVE_RULES),
+        output_contract="只输出要发到群里的内容；如果不发言，只输出 <SILENT> 这个标记。",
+    )
+
+
+def build_proactive_prompt(
+    *,
+    group_id: int | None,
+    date_context: str,
+    context_summaries: str,
+    recent_context: str,
+    persona: str,
+    reasons: list[str],
+) -> str:
+    request = build_proactive_prompt_request(
+        group_id=group_id,
+        date_context=date_context,
+        context_summaries=context_summaries,
+        recent_context=recent_context,
+        persona=persona,
+        reasons=reasons,
+    )
+    intro = "你是 QQ 群友 Esti，判断是否主动接一句话；这不是被 @ 回复，不合适就保持沉默。"
+    rendered = render_prompt(request)
+    return rendered.text.replace("你正在为 QQ 群聊生成回复。请按各 section 的来源、优先级和使用说明判断权重。", intro, 1)
