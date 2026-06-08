@@ -148,6 +148,8 @@ class Config:
     runtime_stats_file: Path
     runtime_stats_user_hash_salt: str
     runtime_stats_summary_interval_seconds: float
+    prometheus_enabled: bool
+    prometheus_include_group_id_label: bool
     perf_obs_enabled: bool
     perf_obs_detail_level: str
     perf_obs_sample_rate: float
@@ -360,6 +362,8 @@ def load_config(base_dir: Path | None = None) -> Config:
     runtime_stats_file = Path(os.getenv("RUNTIME_STATS_FILE", str(log_dir / "runtime_stats.jsonl")))
     runtime_stats_user_hash_salt = os.getenv("RUNTIME_STATS_USER_HASH_SALT", bot_qq or "qq-hermes-local")
     runtime_stats_summary_interval_seconds = float(os.getenv("RUNTIME_STATS_SUMMARY_INTERVAL_SECONDS", "300"))
+    prometheus_enabled = config_utils.parse_bool(os.getenv("PROMETHEUS_ENABLED", "true"))
+    prometheus_include_group_id_label = config_utils.parse_bool(os.getenv("PROMETHEUS_INCLUDE_GROUP_ID_LABEL", "false"))
     perf_obs_enabled = config_utils.parse_bool(os.getenv("PERF_OBS_ENABLED", "true"))
     perf_obs_detail_level = runtime_stats.normalize_label(os.getenv("PERF_OBS_DETAIL_LEVEL", "standard"), default="standard")
     perf_obs_sample_rate = max(0.0, min(1.0, float(os.getenv("PERF_OBS_SAMPLE_RATE", "1.0"))))
@@ -509,6 +513,8 @@ def load_config(base_dir: Path | None = None) -> Config:
         runtime_stats_file=runtime_stats_file,
         runtime_stats_user_hash_salt=runtime_stats_user_hash_salt,
         runtime_stats_summary_interval_seconds=runtime_stats_summary_interval_seconds,
+        prometheus_enabled=prometheus_enabled,
+        prometheus_include_group_id_label=prometheus_include_group_id_label,
         perf_obs_enabled=perf_obs_enabled,
         perf_obs_detail_level=perf_obs_detail_level,
         perf_obs_sample_rate=perf_obs_sample_rate,

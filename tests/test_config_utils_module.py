@@ -1,7 +1,6 @@
 import os
-from pathlib import Path
 
-from qq_hermes_bridge import config_utils
+from qq_hermes_bridge import config as bridge_config, config_utils
 
 
 def test_parse_bool_accepts_true_values_and_false_values():
@@ -25,6 +24,25 @@ def test_parse_group_float_map_accepts_colon_and_equals_and_ignores_bad_items():
 
 def test_parse_group_str_map_accepts_colon_and_equals_and_ignores_bad_items():
     assert config_utils.parse_group_str_map("1=deepseek-v4-flash，2:openai-gpt,bad,qq=x,3=") == {1: "deepseek-v4-flash", 2: "openai-gpt"}
+
+
+def test_load_config_includes_prometheus_flags(tmp_path, monkeypatch):
+    monkeypatch.setenv("GROUP_IDS", "975805598")
+    monkeypatch.delenv("PROMETHEUS_ENABLED", raising=False)
+    monkeypatch.delenv("PROMETHEUS_INCLUDE_GROUP_ID_LABEL", raising=False)
+
+    loaded = bridge_config.load_config(tmp_path)
+
+    assert loaded.prometheus_enabled is True
+    assert loaded.prometheus_include_group_id_label is False
+
+    monkeypatch.setenv("PROMETHEUS_ENABLED", "false")
+    monkeypatch.setenv("PROMETHEUS_INCLUDE_GROUP_ID_LABEL", "true")
+
+    loaded = bridge_config.load_config(tmp_path)
+
+    assert loaded.prometheus_enabled is False
+    assert loaded.prometheus_include_group_id_label is True
 
 
 def test_load_dotenv_sets_missing_values_without_overwriting_existing(tmp_path, monkeypatch):

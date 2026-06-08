@@ -29,7 +29,12 @@ from pydantic import BaseModel
 
 from qq_hermes_bridge import app_helpers, command_utils, commands, config_utils, content_analysis_log as analysis_log_utils, context_store, events, group_files, handlers, hermes_runtime, jrrp, logging_utils, matching, media, media_fetch, metrics, model_output, onebot, outbound, proactive, profiles, reply_processing, reply_queue, runtime_stats, search, search_runtime, self_learning, text_utils, user_controls, vision
 
-BASE_DIR = Path(__file__).resolve().parent.parent
+_RUNTIME_SOURCE_PATH = globals().get("_RUNTIME_PATH")
+BASE_DIR = (
+    Path(_RUNTIME_SOURCE_PATH).resolve().parent.parent
+    if _RUNTIME_SOURCE_PATH is not None
+    else Path(__file__).resolve().parent.parent
+)
 LOG_DIR = BASE_DIR / "logs"
 LOG_DIR.mkdir(exist_ok=True)
 LOG_FILE = LOG_DIR / "bridge.log"
@@ -299,8 +304,22 @@ def log(obj: Any) -> None:
     logging_utils.log(obj, log_file=LOG_FILE)
 
 
+def observe_prometheus_stat(stat: str, fields: dict[str, Any]) -> None:
+    try:
+        metrics.observe_runtime_stat(stat, fields)
+    except Exception as exc:
+        log({"type": "metrics_observe_error", "stat": str(stat or "unknown")[:80], "error": type(exc).__name__})
+
+
+def observe_prometheus_counter(name: str, amount: int = 1) -> None:
+    try:
+        metrics.observe_runtime_counter(name, amount)
+    except Exception as exc:
+        log({"type": "metrics_counter_error", "counter": str(name or "unknown")[:80], "error": type(exc).__name__})
+
+
 def runtime_stat(stat: str, **fields: Any) -> None:
-    metrics.observe_runtime_stat(stat, fields)
+    observe_prometheus_stat(stat, fields)
     if not RUNTIME_STATS_ENABLED:
         return
     if os.getenv("PYTEST_CURRENT_TEST") and RUNTIME_STATS_FILE == LOG_DIR / "runtime_stats.jsonl":
@@ -313,7 +332,7 @@ def runtime_stat(stat: str, **fields: Any) -> None:
 
 def increment_runtime_counter(name: str, amount: int = 1) -> None:
     _runtime_counters[name] = int(_runtime_counters.get(name, 0)) + int(amount)
-    metrics.observe_runtime_counter(name, amount)
+    observe_prometheus_counter(name, amount)
 
 
 def runtime_user_hash(user_id: Any) -> str:
@@ -370,7 +389,7 @@ def emit_perf_stat(stat: str, **fields: Any) -> None:
     if "result_len" in enriched and "result_len_bucket" not in enriched:
         enriched["result_len_bucket"] = runtime_stats.length_bucket(enriched.get("result_len") or 0)
     if not runtime_perf_enabled():
-        metrics.observe_runtime_stat(stat, enriched)
+        observe_prometheus_stat(stat, enriched)
         return
     runtime_stat(stat, **enriched)
 
