@@ -8,3 +8,7 @@
 - `/home/roxy/.hermes/config.yaml` - local secret config; do not print or commit.
 - `.codegraph/` - local codegraph index; ignore and do not commit.
 - `docs/superpowers/specs/.~lock.*` - editor lock files; ignore and do not commit.
+- Git workflow - feature branches merge to main with `--no-ff` for clear history.
+- Hermes CLI warnings - `strip_cli_warning_lines()` removes "Warning: Unknown toolsets:" from stdout.
+- XML cleanup - process matched tag pairs first, then standalone tags; avoid removing content between unrelated tags.
+- Test file creation - use Bash heredoc for complex multi-line strings with special chars instead of inline Python.
