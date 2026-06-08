@@ -82,6 +82,26 @@ def test_recent_context_labels_each_message_with_sequence_and_speaker_identity()
     assert "注意：以上每一个编号都是一条独立群消息" in context
 
 
+def test_recent_context_groups_older_messages_as_low_weight_and_latest_as_high_weight():
+    bridge = load_bridge_module()
+    bridge.CONTEXT_MAX_MESSAGES = 8
+    bridge._recent_messages.clear()
+    bridge._recent_messages_by_group.clear()
+
+    for idx in range(1, 9):
+        bridge.remember_message(make_event(user_id=1000 + idx, nickname=f"群友{idx}", text=f"消息{idx}"))
+
+    context = bridge.format_recent_context()
+
+    assert "最近上下文有时间权重" in context
+    assert "低权重：较早上下文" in context
+    assert "高权重：最新上下文" in context
+    assert context.index("低权重：较早上下文") < context.index("[1] 内容：消息1")
+    assert context.index("[2] 内容：消息2") < context.index("高权重：最新上下文")
+    assert context.index("高权重：最新上下文") < context.index("[3] 内容：消息3")
+    assert "[8] 内容：消息8" in context
+
+
 def test_recent_context_labels_bot_history_and_pending_markers():
     bridge = load_bridge_module()
     bridge.CONTEXT_MAX_MESSAGES = 20
