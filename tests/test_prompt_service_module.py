@@ -147,3 +147,14 @@ def test_build_proactive_prompt_renders_silent_contract_once():
     assert prompt.count("<SILENT>") == 1
     assert "空输出是正确的" not in prompt
     assert "不要解释沉默原因或输出规则" in prompt
+
+
+from qq_hermes_bridge import commands
+
+
+def test_commands_build_chat_prompt_delegates_to_prompt_service():
+    assert commands.build_chat_prompt(**DIRECT_PROMPT_KWARGS) == prompt_service.build_chat_prompt(**DIRECT_PROMPT_KWARGS)
+
+
+def test_commands_build_proactive_prompt_delegates_to_prompt_service():
+    assert commands.build_proactive_prompt(**PROACTIVE_PROMPT_KWARGS) == prompt_service.build_proactive_prompt(**PROACTIVE_PROMPT_KWARGS)
