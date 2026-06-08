@@ -152,9 +152,98 @@ def test_build_proactive_prompt_renders_silent_contract_once():
 from qq_hermes_bridge import commands
 
 
+def rendered_section_by_key(rendered, key):
+    return next(section for section in rendered.sections if section.key == key)
+
+
 def test_commands_build_chat_prompt_delegates_to_prompt_service():
     assert commands.build_chat_prompt(**DIRECT_PROMPT_KWARGS) == prompt_service.build_chat_prompt(**DIRECT_PROMPT_KWARGS)
 
 
 def test_commands_build_proactive_prompt_delegates_to_prompt_service():
     assert commands.build_proactive_prompt(**PROACTIVE_PROMPT_KWARGS) == prompt_service.build_proactive_prompt(**PROACTIVE_PROMPT_KWARGS)
+
+
+def test_render_prompt_exposes_section_diagnostics_without_truncation():
+    request = prompt_service.build_direct_prompt_request(**DIRECT_PROMPT_KWARGS)
+
+    rendered = prompt_service.render_prompt(request)
+
+    assert len(rendered.sections) == len(request.sections)
+    assert rendered.section_keys == tuple(section.key for section in request.sections)
+    current = rendered_section_by_key(rendered, "current_message")
+    current_request = next(section for section in request.sections if section.key == "current_message")
+    assert current.key == "current_message"
+    assert current.source == "current_message"
+    assert current.priority == "critical"
+    assert current.original_char_count == len(current_request.body.strip())
+    assert current.rendered_char_count == current.original_char_count
+    assert current.budget_chars is None
+    assert current.truncated is False
+
+
+def test_truncate_text_respects_budget_and_marks_truncation():
+    rendered, truncated = prompt_service._truncate_text("abcdef", 5)
+
+    assert truncated is True
+    assert len(rendered) == 5
+
+    rendered, truncated = prompt_service._truncate_text("abcdef", 20)
+
+    assert rendered == "abcdef"
+    assert truncated is False
+
+
+def test_direct_low_priority_sections_are_truncated_but_current_message_is_not():
+    kwargs = dict(DIRECT_PROMPT_KWARGS)
+    kwargs["context_summaries"] = "摘" * 1500
+    kwargs["learning_context"] = "学" * 1200
+    kwargs["user_text"] = "问" * 3600
+    kwargs["max_prompt_chars"] = 3500
+    request = prompt_service.build_direct_prompt_request(**kwargs)
+
+    rendered = prompt_service.render_prompt(request)
+
+    summary = rendered_section_by_key(rendered, "summary_context")
+    learning = rendered_section_by_key(rendered, "self_learning")
+    current = rendered_section_by_key(rendered, "current_message")
+    assert summary.budget_chars == 1000
+    assert summary.truncated is True
+    assert summary.rendered_char_count == 1000
+    assert learning.budget_chars == 800
+    assert learning.truncated is True
+    assert learning.rendered_char_count == 800
+    assert current.budget_chars is None
+    assert current.truncated is False
+    assert prompt_service.TRUNCATION_SUFFIX in rendered.text
+
+
+def test_proactive_summary_budget_is_smaller_than_direct_summary_budget():
+    long_summary = "摘" * 1500
+    direct_kwargs = dict(DIRECT_PROMPT_KWARGS)
+    direct_kwargs["context_summaries"] = long_summary
+    proactive_kwargs = dict(PROACTIVE_PROMPT_KWARGS)
+    proactive_kwargs["context_summaries"] = long_summary
+
+    direct = prompt_service.render_prompt(prompt_service.build_direct_prompt_request(**direct_kwargs))
+    proactive = prompt_service.render_prompt(prompt_service.build_proactive_prompt_request(**proactive_kwargs))
+
+    direct_summary = rendered_section_by_key(direct, "summary_context")
+    proactive_summary = rendered_section_by_key(proactive, "summary_context")
+    assert direct_summary.budget_chars == 1000
+    assert proactive_summary.budget_chars == 600
+    assert direct_summary.rendered_char_count == 1000
+    assert proactive_summary.rendered_char_count == 600
+
+
+def test_proactive_prompt_keeps_silent_contract_once_when_sections_truncate():
+    kwargs = dict(PROACTIVE_PROMPT_KWARGS)
+    kwargs["context_summaries"] = "摘" * 1000
+    kwargs["recent_context"] = "近" * 5000
+    kwargs["persona"] = "人" * 2000
+
+    prompt = prompt_service.build_proactive_prompt(**kwargs)
+
+    assert prompt.count("<SILENT>") == 1
+    assert prompt_service.TRUNCATION_SUFFIX in prompt
+    assert "空输出是正确的" not in prompt

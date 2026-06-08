@@ -48,10 +48,54 @@ class PromptRequest:
 
 
 @dataclass(frozen=True)
+class RenderedSection:
+    key: str
+    source: PromptSource
+    priority: PromptPriority
+    original_char_count: int
+    rendered_char_count: int
+    budget_chars: int | None
+    truncated: bool
+
+
+@dataclass(frozen=True)
 class RenderedPrompt:
     text: str
     section_keys: tuple[str, ...]
     char_count: int
+    sections: tuple[RenderedSection, ...] = ()
+
+
+TRUNCATION_SUFFIX = "\n……（本 section 因长度限制已截断）"
+
+DIRECT_SECTION_BUDGETS = {
+    "runtime_date": 200,
+    "summary_context": 1000,
+    "recent_context": 4000,
+    "quoted_context": 1600,
+    "current_message": None,
+    "media_context": 1600,
+    "sender_profile": 1200,
+    "mentioned_profiles": 1200,
+    "related_profiles": 800,
+    "self_learning": 800,
+    "persona": 1600,
+}
+
+PROACTIVE_SECTION_BUDGETS = {
+    "runtime_date": 200,
+    "summary_context": 600,
+    "recent_context": 3500,
+    "trigger_reasons": 300,
+    "persona": 1200,
+}
+
+PRIORITY_FALLBACK_BUDGETS = {
+    "critical": None,
+    "high": 2400,
+    "medium": 1200,
+    "low": 800,
+}
 
 
 def _clean_body(body: object) -> str:
@@ -59,8 +103,25 @@ def _clean_body(body: object) -> str:
     return text or "（无）"
 
 
+def _budget_for_section(kind: PromptKind, section: PromptSection) -> int | None:
+    budgets = DIRECT_SECTION_BUDGETS if kind == "direct" else PROACTIVE_SECTION_BUDGETS
+    if section.key in budgets:
+        return budgets[section.key]
+    return PRIORITY_FALLBACK_BUDGETS[section.priority]
+
+
+def _truncate_text(text: str, budget_chars: int | None) -> tuple[str, bool]:
+    if budget_chars is None or len(text) <= budget_chars:
+        return text, False
+    if budget_chars <= len(TRUNCATION_SUFFIX):
+        return TRUNCATION_SUFFIX[:budget_chars], True
+    keep = budget_chars - len(TRUNCATION_SUFFIX)
+    return f"{text[:keep]}{TRUNCATION_SUFFIX}", True
+
+
 def render_prompt(request: PromptRequest) -> RenderedPrompt:
     """Render a PromptRequest into a Hermes-compatible prompt string."""
+    diagnostics: list[RenderedSection] = []
     lines: list[str] = [
         "你正在为 QQ 群聊生成回复。请按各 section 的来源、优先级和使用说明判断权重。",
         f"类型：{request.kind}",
@@ -69,6 +130,18 @@ def render_prompt(request: PromptRequest) -> RenderedPrompt:
     ]
 
     for section in request.sections:
+        clean_body = _clean_body(section.body)
+        budget = _budget_for_section(request.kind, section)
+        rendered_body, truncated = _truncate_text(clean_body, budget)
+        diagnostics.append(RenderedSection(
+            key=section.key,
+            source=section.source,
+            priority=section.priority,
+            original_char_count=len(clean_body),
+            rendered_char_count=len(rendered_body),
+            budget_chars=budget,
+            truncated=truncated,
+        ))
         lines.extend([
             "",
             f"## {section.title}",
@@ -77,7 +150,7 @@ def render_prompt(request: PromptRequest) -> RenderedPrompt:
         ])
         if section.instruction:
             lines.append(f"使用说明：{section.instruction}")
-        lines.append(_clean_body(section.body))
+        lines.append(rendered_body)
 
     if request.rules:
         lines.extend(["", "## 规则"])
@@ -89,6 +162,7 @@ def render_prompt(request: PromptRequest) -> RenderedPrompt:
         text=text,
         section_keys=tuple(section.key for section in request.sections),
         char_count=len(text),
+        sections=tuple(diagnostics),
     )
 
 
