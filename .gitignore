@@ -7,6 +7,7 @@
 # Private prompts / group profiles / local knowledge
 base_persona.md
 groups/
+!groups/_templates/
 
 # Python runtime/cache
 venv/
@@ -23,6 +24,7 @@ data
 jrrp_results.json
 napcat-login/
 napcat-qrcode.png
+.codegraph/
 
 # NapCat / QQ runtime state (contains login state, DBs, logs, cache)
 napcat-data/

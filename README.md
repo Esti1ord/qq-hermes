@@ -58,31 +58,68 @@ git add -n .
 
 ```text
 qq-hermes/
-├── bridge.py                  # FastAPI 入口和运行时编排
-├── qq_hermes_bridge/          # 主要业务模块
-│   ├── onebot.py              # OneBot 消息段、@、reply 解析
-│   ├── handlers.py            # 路由决策：命令、direct、proactive
-│   ├── commands.py            # /context、/search、/deepseek、jrrp 等
-│   ├── reply_queue.py         # 每群回复队列
-│   ├── context_store.py       # 群上下文缓存和摘要
-│   ├── group_files.py         # persona/people/knowledge 文件选择
-│   ├── hermes_runtime.py      # Hermes CLI 调用与 session 辅助
-│   ├── media.py               # 图片/媒体引用解析
-│   ├── media_fetch.py         # 受限图片下载
-│   ├── vision.py              # OCR/图片理解 provider
-│   ├── search.py              # 搜索命令辅助
-│   ├── runtime_stats.py       # 内容安全运行统计
-│   ├── self_learning.py       # 群内用语/风格自学习提示
-│   ├── outbound.py            # OneBot 发消息、reply、去重
-│   └── proactive.py           # 主动发言评分和限制
-├── scripts/                   # 运维脚本
-├── tests/                     # pytest 测试
-├── .env.example               # 配置模板，可提交
-├── .env                       # 本机私密配置，不提交
-├── groups/                    # 私有群资料，不提交
-├── logs/                      # 私有运行日志，不提交
-└── napcat-data/               # QQ/NapCat 登录态，不提交
+├── bridge.py                      # FastAPI 入口和运行时编排
+├── qq_hermes_bridge/              # 主要业务模块
+│   ├── onebot.py                  # OneBot 消息段、@、reply 解析
+│   ├── handlers.py                # 路由决策：命令、direct、proactive
+│   ├── commands.py                # /context、/search、/deepseek、jrrp 等
+│   ├── prompt_service.py          # Prompt 构建服务（PromptSection/PromptRequest）
+│   ├── reply_queue.py             # 每群回复队列
+│   ├── context_store.py           # 群上下文缓存和摘要
+│   ├── group_files.py             # persona/people/knowledge 文件选择
+│   ├── hermes_runtime.py          # Hermes CLI 调用与 session 辅助
+│   ├── media.py                   # 图片/媒体引用解析
+│   ├── media_fetch.py             # 受限图片下载
+│   ├── vision.py                  # OCR/图片理解 provider
+│   ├── search.py                  # 搜索命令辅助
+│   ├── runtime_stats.py           # 内容安全运行统计
+│   ├── self_learning.py           # 群内用语/风格自学习
+│   ├── outbound.py                # OneBot 发消息、reply、去重
+│   ├── proactive.py               # 主动发言评分和限制
+│   └── ...
+├── scripts/                       # 运维脚本
+│   ├── add_group.sh               # 添加新群配置
+│   ├── sync_people_from_qqdocs.py # 腾讯文档同步
+│   └── ...
+├── tests/                         # pytest 测试（336 个测试用例）
+├── docs/                          # 设计文档和实施计划
+│   └── superpowers/
+│       ├── specs/                 # PromptService 设计规范
+│       └── plans/                 # 实施计划
+├── groups/                        # 群配置目录（私有，不提交）
+│   ├── _templates/                # 配置模板
+│   │   └── base_persona.md.example
+│   ├── <group_id>/
+│   │   ├── persona.md             # 本群风格和行为偏好
+│   │   ├── people.md              # 群友资料
+│   │   ├── knowledge.md           # 稳定知识
+│   │   └── self_learning.json     # 自学习数据（可选）
+│   └── groups.txt                 # 允许的群号列表
+├── logs/                          # 运行日志（私有，不提交）
+│   ├── runtime_stats.jsonl        # 运行统计
+│   ├── content_analysis.jsonl     # 内容分析（敏感）
+│   ├── context_<group_id>.json    # 群上下文缓存
+│   └── ...
+├── napcat-data/                   # NapCat 登录态（私有，不提交）
+├── napcat-login/                  # NapCat 登录材料（私有，不提交）
+├── venv/                          # Python 虚拟环境
+├── .env.example                   # 配置模板（可提交）
+├── .env                           # 本机配置（不提交）
+├── .gitignore                     # Git 忽略规则
+├── CLAUDE.md                      # 项目约定
+├── README.md                      # 本文档
+├── jrrp_templates.txt             # JRRP 模板数据
+├── start-bridge.sh                # 启动 bridge 脚本
+├── start-napcat-docker.sh         # 启动 NapCat 容器脚本
+└── check-status.sh                # 状态检查脚本
 ```
+
+说明：
+
+- **核心代码**：`bridge.py` 和 `qq_hermes_bridge/` 包含所有业务逻辑
+- **测试覆盖**：336 个测试用例，覆盖主要功能模块
+- **配置隔离**：群资料、日志、登录态都在 `.gitignore` 中
+- **模板提供**：`.env.example` 和 `groups/_templates/` 提供配置起点
 
 `bridge.py` 仍承担入口和运行时协调职责；可复用逻辑大多已经下沉到 `qq_hermes_bridge/`。后续重构方向是继续削薄 `bridge.py`，把全局状态、配置读取和运行时上下文迁到更清晰的 app context，而不是再新建一套并行架构。
 
@@ -160,6 +197,37 @@ cd /home/roxy/qq-hermes
 这个脚本会读取 `.env`，创建所需目录，并在容器不存在或关键配置变化时创建/重建容器。
 
 ## NapCat 与 OneBot
+
+### 获取 NapCat
+
+本项目不包含 NapCat 源码。请通过以下方式获取：
+
+**Docker 方式（推荐）**：
+
+```bash
+# 直接使用官方镜像（通过 start-napcat-docker.sh）
+./start-napcat-docker.sh
+
+# 或手动拉取
+docker pull mlikiowa/napcat-docker:v4.10.47
+```
+
+**源码方式**：
+
+```bash
+# 克隆 NapCat 仓库到项目外
+cd ~
+git clone https://github.com/NapNeko/NapCatQQ.git
+# 按照 NapCat 官方文档构建和运行
+```
+
+**说明**：
+
+- 本项目的 `.gitignore` 已排除 `NapCat-Docker/`、`NapCatQQ/`、`napcat-shell/` 等目录
+- 推荐使用 Docker 方式，配置简单且隔离性好
+- `start-napcat-docker.sh` 会自动拉取镜像并创建容器
+
+### NapCat 配置
 
 QQ 登录态、群聊事件接收和 OneBot v11 HTTP API 由 NapCat 负责。Bridge 不直接处理 QQ 协议，只通过 OneBot 与 NapCat 交互。
 
