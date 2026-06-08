@@ -2312,13 +2312,8 @@ def bootstrap_group_session(prompt: str, group_id: int | None) -> subprocess.Com
     return p
 
 
-def _model_wants_silent(output: str) -> bool:
-    """模型是否明确表示不想说话（包括各种'空字符串'变体）。"""
-    return model_output.model_wants_silent(output)
-
-
-def _proactive_output_is_fallback(output: str) -> bool:
-    return model_output.proactive_output_is_fallback(output)
+def _proactive_output_should_suppress(output: str) -> bool:
+    return model_output.proactive_output_should_suppress(output)
 
 
 def _strip_reply_prefix(text: str) -> str:
@@ -2352,9 +2347,9 @@ def _proactive_output_repeats_recent_bot_wording(group_id: int | None, output: s
 
 def run_proactive_reply(event: dict[str, Any], reasons: list[str]) -> str:
     group_id = group_id_from_event(event)
-    raw = run_hermes_raw(build_proactive_prompt(event, reasons), group_id=group_id, purpose="proactive_reply")
+    raw = run_hermes_raw(build_proactive_prompt(event, reasons), group_id=group_id, use_group_session=False, purpose="proactive_reply")
     # 先检测是否需要沉默，再 finalize_reply，避免 finalize_reply 把空输出变成默认回复
-    if _model_wants_silent(raw) or _proactive_output_is_fallback(raw):
+    if _proactive_output_should_suppress(raw):
         return ""
     reply = finalize_reply(raw)
     if _proactive_output_repeats_recent_bot_wording(group_id, reply):
@@ -2790,7 +2785,7 @@ def record_proactive_runtime_result(group_id: int, event: dict[str, Any], proact
     interaction_id = str(perf.get("interaction_id") or "")
     if result.get("proactive_replied"):
         increment_runtime_counter("proactive_replies_sent")
-    elif result.get("ignored") in {"proactive_model_skipped", "duplicate_outbound"}:
+    elif result.get("ignored") in {"proactive_model_skipped", "proactive_revalidated_blocked", "duplicate_outbound"}:
         increment_runtime_counter("proactive_skipped")
     if suppressed_duplicate:
         pass
@@ -2813,6 +2808,68 @@ def record_proactive_runtime_result(group_id: int, event: dict[str, Any], proact
     )
 
 
+def complete_proactive_skip(
+    group_id: int,
+    event: dict[str, Any],
+    proactive_data: dict[str, Any],
+    *,
+    result_reason: str = "proactive_model_skipped",
+    analysis_reason: str = "",
+    blocked: str = "",
+    phase: str = "",
+    output_len: int = 0,
+    duration_start: float,
+    perf: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    mark_proactive_skipped(group_id)
+    log_payload: dict[str, Any] = {
+        "type": "proactive_skipped",
+        "group_id": group_id,
+        "score": proactive_data.get("score"),
+        "reasons": proactive_data.get("reasons", []),
+        "direct_name_trigger": proactive_data.get("direct_name_trigger", False),
+    }
+    if blocked:
+        log_payload["blocked"] = blocked
+    if phase:
+        log_payload["phase"] = phase
+    log(log_payload)
+
+    result = reply_processing.proactive_skipped_result(
+        proactive_data,
+        queue_remaining=reply_queue_size(group_id),
+        reason=result_reason,
+        blocked=blocked,
+    )
+    analysis_fields: dict[str, Any] = {
+        "score": proactive_data.get("score"),
+        "reasons": proactive_data.get("reasons", []),
+        "direct_name_trigger": proactive_data.get("direct_name_trigger", False),
+        "queue_remaining": reply_queue_size(group_id),
+    }
+    if analysis_reason:
+        analysis_fields["reason"] = analysis_reason
+    if blocked:
+        analysis_fields["blocked"] = blocked
+    content_analysis_log(
+        "proactive_skipped",
+        group_id,
+        **content_analysis_user_fields(event),
+        **analysis_fields,
+    )
+    record_proactive_runtime_result(
+        group_id,
+        event,
+        proactive_data,
+        result=result,
+        output_len=output_len,
+        suppressed_duplicate=False,
+        duration_start=duration_start,
+        perf=perf,
+    )
+    return result
+
+
 async def process_proactive_reply_intent(group_id: int, queued_intent: dict[str, Any]) -> dict[str, Any]:
     global _last_reply_at
     event = queued_intent.get("event") or {}
@@ -2824,6 +2881,20 @@ async def process_proactive_reply_intent(group_id: int, queued_intent: dict[str,
     event_received_at = queued_intent.get("_perf_event_received_at")
     generation_ms = 0
     perf: dict[str, Any] = {"interaction_id": interaction_id, "queue_wait_ms": queue_wait_ms, "event_received_at": event_received_at}
+    perf["e2e_ms"] = interaction_e2e_ms(interaction_id, event_received_at)
+    revalidate_block = proactive_block_reason(proactive_state_for_group(group_id), time.time(), group_id)
+    if revalidate_block:
+        return complete_proactive_skip(
+            group_id,
+            event,
+            proactive,
+            result_reason="proactive_revalidated_blocked",
+            analysis_reason="dequeue_revalidate",
+            blocked=revalidate_block,
+            phase="dequeue_revalidate",
+            duration_start=start,
+            perf=perf,
+        )
     content_analysis_log(
         "proactive_generation_start",
         group_id,
@@ -2898,23 +2969,13 @@ async def process_proactive_reply_intent(group_id: int, queued_intent: dict[str,
         )
         record_proactive_runtime_result(group_id, event, proactive, result=result, output_len=len(reply), suppressed_duplicate=False, duration_start=start, perf=perf)
         return result
-    mark_proactive_skipped(group_id)
-    log({"type": "proactive_skipped", "group_id": group_id, "score": proactive.get("score"), "reasons": proactive.get("reasons", []), "direct_name_trigger": proactive.get("direct_name_trigger", False)})
-    result = reply_processing.proactive_skipped_result(
-        proactive,
-        queue_remaining=reply_queue_size(group_id),
-    )
-    content_analysis_log(
-        "proactive_skipped",
+    return complete_proactive_skip(
         group_id,
-        **content_analysis_user_fields(event),
-        score=proactive.get("score"),
-        reasons=proactive.get("reasons", []),
-        direct_name_trigger=proactive.get("direct_name_trigger", False),
-        queue_remaining=reply_queue_size(group_id),
+        event,
+        proactive,
+        duration_start=start,
+        perf=perf,
     )
-    record_proactive_runtime_result(group_id, event, proactive, result=result, output_len=0, suppressed_duplicate=False, duration_start=start, perf=perf)
-    return result
 
 
 async def process_one_reply_intent(group_id: int) -> dict[str, Any]:

@@ -22,15 +22,178 @@ FALLBACK_PHRASES = [
     "没处理好",
 ]
 
-SILENT_MARKERS = {"空字符串", "empty string", "empty", "无", "none", "不回复", "不插话", "沉默"}
+SILENT_MARKERS = {
+    "<silent>",
+    "[silent]",
+    "silent",
+    "空字符串",
+    "empty string",
+    "empty",
+    "无",
+    "none",
+    "不回复",
+    "不发言",
+    "不插话",
+    "不需要输出",
+    "不需要再输出",
+    "不再输出",
+    "不需要回复",
+    "不需要发言",
+    "不需要插话",
+    "无需回复",
+    "无需发言",
+    "无需插话",
+    "不适合插话",
+    "没有新的接话点",
+    "没有自然接话点",
+    "没话接",
+    "沉默",
+    "保持沉默",
+}
+
+# Short meta outputs that describe the output contract rather than a sendable
+# group message. These are kept separate from longer rationale detection so
+# casual sentences containing words like "不需要回复" are not suppressed by length.
+PROACTIVE_SHORT_SILENCE_DECISIONS = [
+    "空的输出",
+    "输出为空",
+    "空输出",
+    "输出空字符串",
+    "只输出空字符串",
+    "输出 <silent>",
+    "输出<silent>",
+    "只输出 <silent>",
+    "只输出<silent>",
+]
+
+PROACTIVE_STANDALONE_SILENCE_DECISIONS = [
+    *PROACTIVE_SHORT_SILENCE_DECISIONS,
+    "保持沉默",
+    "不需要插话",
+    "无需插话",
+    "不适合插话",
+    "没有新的接话点",
+    "没有自然接话点",
+]
+
+PROACTIVE_CONNECTION_POINT_PHRASES = [
+    "没有新的接话点",
+    "没有自然接话点",
+]
+
+PROACTIVE_INSERTION_DECISION_PHRASES = [
+    "不需要插话",
+    "无需插话",
+    "不适合插话",
+]
+
+
+# Phrases that can indicate a proactive silence rationale when paired with
+# internal/meta context wording.
+PROACTIVE_SILENCE_DECISION_PHRASES = [
+    *PROACTIVE_SHORT_SILENCE_DECISIONS,
+    "不需要输出",
+    "不需要再输出",
+    "不再输出",
+    "不需要回复",
+    "无需回复",
+    "不需要插话",
+    "无需插话",
+    "不适合插话",
+    "没有新的接话点",
+    "没有自然接话点",
+    "没话接",
+]
+
+PROACTIVE_INTERNAL_CONTEXT_PHRASES = [
+    "主动发言",
+    "主动接话",
+    "判断结果",
+    "触发原因",
+    "群友之间",
+    "持续讨论",
+]
+
+
+def _compact_phrases(phrases: Iterable[str]) -> list[str]:
+    return [matching.compact_text_key(phrase) for phrase in phrases if phrase]
+
+
+_COMPACT_SILENT_MARKERS = set(_compact_phrases(SILENT_MARKERS))
+_COMPACT_PROACTIVE_SHORT_SILENCE_DECISIONS = set(_compact_phrases(PROACTIVE_SHORT_SILENCE_DECISIONS))
+_COMPACT_PROACTIVE_STANDALONE_SILENCE_DECISIONS = _compact_phrases(PROACTIVE_STANDALONE_SILENCE_DECISIONS)
+_COMPACT_PROACTIVE_CONNECTION_POINT_PHRASES = _compact_phrases(PROACTIVE_CONNECTION_POINT_PHRASES)
+_COMPACT_PROACTIVE_INSERTION_DECISION_PHRASES = _compact_phrases(PROACTIVE_INSERTION_DECISION_PHRASES)
+_COMPACT_PROACTIVE_SILENCE_DECISION_PHRASES = _compact_phrases(PROACTIVE_SILENCE_DECISION_PHRASES)
+_COMPACT_PROACTIVE_INTERNAL_CONTEXT_PHRASES = _compact_phrases(PROACTIVE_INTERNAL_CONTEXT_PHRASES)
 
 
 def model_wants_silent(output: str) -> bool:
     """Whether the model explicitly indicated silence, including quoted variants."""
-    clean = re.sub(r"[（()）「」『』\"\"'']", "", output or "").strip().lower()
+    clean = re.sub(r"[（()）「」『』\"\"''`]", "", output or "").strip().lower()
     if not clean:
         return True
-    return any(matching.exact_normalized_match(clean, marker) for marker in SILENT_MARKERS)
+    compact = matching.compact_text_key(clean)
+    return compact in _COMPACT_SILENT_MARKERS or any(
+        matching.exact_normalized_match(clean, marker)
+        for marker in SILENT_MARKERS
+    )
+
+
+def proactive_output_is_silence_decision(output: str) -> bool:
+    """Detect proactive silence decisions or rationale text, not group messages."""
+    compact = matching.compact_text_key(output)
+    if not compact:
+        return True
+    if model_wants_silent(output):
+        return True
+    if "<silent>" in compact:
+        return True
+    if compact in _COMPACT_PROACTIVE_SHORT_SILENCE_DECISIONS:
+        return True
+    has_standalone_decision = matching.contains_any_phrase(
+        compact,
+        _COMPACT_PROACTIVE_STANDALONE_SILENCE_DECISIONS,
+        case_sensitive=False,
+    )
+    if has_standalone_decision and len(compact) <= 24:
+        return True
+    has_short_contract_phrase = matching.contains_any_phrase(
+        compact,
+        _COMPACT_PROACTIVE_SHORT_SILENCE_DECISIONS,
+        case_sensitive=False,
+    )
+    if has_short_contract_phrase and len(compact) <= 20:
+        return True
+    has_connection_point = matching.contains_any_phrase(
+        compact,
+        _COMPACT_PROACTIVE_CONNECTION_POINT_PHRASES,
+        case_sensitive=False,
+    )
+    has_insertion_decision = matching.contains_any_phrase(
+        compact,
+        _COMPACT_PROACTIVE_INSERTION_DECISION_PHRASES,
+        case_sensitive=False,
+    )
+    if has_connection_point and has_insertion_decision:
+        return True
+    has_silence_decision = matching.contains_any_phrase(
+        compact,
+        _COMPACT_PROACTIVE_SILENCE_DECISION_PHRASES,
+        case_sensitive=False,
+    )
+    if not has_silence_decision:
+        return False
+    return matching.contains_any_phrase(
+        compact,
+        _COMPACT_PROACTIVE_INTERNAL_CONTEXT_PHRASES,
+        case_sensitive=False,
+    )
+
+
+def proactive_output_is_silence_rationale(output: str) -> bool:
+    """Backward-compatible name for proactive silence-decision suppression."""
+    return proactive_output_is_silence_decision(output)
 
 
 def output_is_fallback(output: str) -> bool:
@@ -40,8 +203,13 @@ def output_is_fallback(output: str) -> bool:
     return matching.contains_any_phrase(clean, FALLBACK_PHRASES)
 
 
+def proactive_output_should_suppress(output: str) -> bool:
+    return output_is_fallback(output) or proactive_output_is_silence_decision(output)
+
+
 def proactive_output_is_fallback(output: str) -> bool:
-    return output_is_fallback(output)
+    """Backward-compatible wrapper for proactive output suppression."""
+    return proactive_output_should_suppress(output)
 
 
 def normalize_repetition_text(text: str) -> str:
