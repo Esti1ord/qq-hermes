@@ -123,3 +123,15 @@ def test_session_needs_compaction_uses_message_and_body_thresholds():
 
     assert needs is True
     assert stats == {"message_count": 12, "body_chars": 50}
+
+
+def test_strip_session_footer_removes_cli_warning_lines():
+    output = "Warning: Unknown toolsets: mcp-codegraph\n共工那波确实很东北\n\nsession_id: 20260608_132716_3e3e54"
+
+    assert hermes_runtime.strip_session_footer(output) == "共工那波确实很东北"
+
+
+def test_strip_session_footer_keeps_natural_warning_wording():
+    output = "Warning: 这句是模型自然输出\n\nsession_id: 20260608_132716_3e3e54"
+
+    assert hermes_runtime.strip_session_footer(output) == "Warning: 这句是模型自然输出"
