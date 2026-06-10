@@ -164,6 +164,68 @@ def test_direct_image_message_emits_ocr_performance_stats(monkeypatch):
     assert route["ok_count"] == 1
 
 
+def test_ocr_runtime_logs_do_not_leak_text_or_image_urls_when_debug_flags_set(monkeypatch):
+    bridge = load_bridge_module()
+    configure_bridge(bridge)
+    bridge.OCR_LOG_TEXT = True
+    bridge.OCR_LOG_IMAGE_URLS = True
+    logs = []
+
+    monkeypatch.setattr(bridge, "log", lambda event: logs.append(event))
+
+    async def fake_fetch(ref, **kwargs):
+        return media_fetch.MediaFetchResult(
+            ref=ref,
+            status="ok",
+            content=b"image",
+            content_type="image/png",
+            source_host="cdn.example.test",
+            status_code=200,
+        )
+
+    monkeypatch.setattr(bridge.media_fetch, "fetch_onebot_image", fake_fetch)
+    monkeypatch.setattr(
+        bridge,
+        "build_ocr_provider",
+        lambda: vision.MockVisionProvider(text="SECRET_OCR_TEXT_123", description="SECRET_DESCRIPTION_123"),
+    )
+
+    result = asyncio.run(bridge.recognize_media_for_event(make_image_at_event(), route="direct"))
+
+    assert result["results"][0].status == "ok"
+    rendered = repr(logs)
+    assert "SECRET_OCR_TEXT_123" not in rendered
+    assert "SECRET_DESCRIPTION_123" not in rendered
+    assert "https://cdn.example.test/diet.png" not in rendered
+    assert "diet.png" not in rendered
+    assert "token=" not in rendered
+
+
+def test_ocr_context_task_error_logs_type_only(monkeypatch):
+    bridge = load_bridge_module()
+    configure_bridge(bridge)
+    logs = []
+
+    monkeypatch.setattr(bridge, "log", lambda event: logs.append(event))
+
+    async def failing():
+        raise RuntimeError("SECRET_OCR_TEXT_123 https://cdn.example.test/private.png")
+
+    async def run():
+        task = asyncio.create_task(failing())
+        try:
+            await task
+        except RuntimeError:
+            pass
+        bridge._consume_ocr_context_task(task)
+
+    asyncio.run(run())
+
+    assert logs == [{"type": "ocr_context_task_error", "error": "RuntimeError"}]
+    assert "SECRET_OCR_TEXT_123" not in repr(logs)
+    assert "private.png" not in repr(logs)
+
+
 def test_ocr_context_persistence_strips_nonpersistent_text(monkeypatch, tmp_path):
     bridge = load_bridge_module()
     configure_bridge(bridge)
@@ -512,3 +574,38 @@ def test_context_ocr_failure_leaves_base_image_context(monkeypatch):
     human = list(bridge.recent_messages_for_group(975805598))[0]
     assert human["text"] == "群里发图[图片]"
     assert "text_without_ocr" not in human
+
+
+def test_build_ocr_provider_requires_external_provider_permission_for_model():
+    bridge = load_bridge_module()
+    configure_bridge(bridge)
+    bridge.OCR_PROVIDER = "model"
+    bridge.OCR_EXTERNAL_PROVIDER_ALLOWED = False
+    bridge.OCR_MODEL = "vision-model"
+    bridge.OCR_PROVIDER_BASE_URL = "https://api.example.test/v1"
+    bridge.OCR_API_KEY_ENV = "VISION_API_KEY"
+
+    provider = bridge.build_ocr_provider()
+
+    assert isinstance(provider, vision.NoopVisionProvider)
+
+
+def test_build_ocr_provider_wires_model_base_url_and_api_key_env():
+    bridge = load_bridge_module()
+    configure_bridge(bridge)
+    bridge.OCR_PROVIDER = "model"
+    bridge.OCR_EXTERNAL_PROVIDER_ALLOWED = True
+    bridge.OCR_MODEL = "vision-model"
+    bridge.OCR_PROVIDER_BASE_URL = "https://api.example.test/v1"
+    bridge.OCR_API_KEY_ENV = "VISION_API_KEY"
+    bridge.OCR_PROVIDER_TIMEOUT = 17
+    bridge.OCR_MAX_RESULT_CHARS = 456
+
+    provider = bridge.build_ocr_provider()
+
+    assert isinstance(provider, vision.ModelVisionProvider)
+    assert provider.model == "vision-model"
+    assert provider.base_url == "https://api.example.test/v1"
+    assert provider.api_key_env == "VISION_API_KEY"
+    assert provider.timeout == 17
+    assert provider.max_result_chars == 456

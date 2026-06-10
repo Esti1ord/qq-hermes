@@ -1827,6 +1827,8 @@ def build_ocr_provider() -> vision.VisionProvider:
         hermes_bin=HERMES_BIN,
         model=OCR_MODEL or HERMES_MODEL,
         hermes_provider=HERMES_PROVIDER,
+        base_url=OCR_PROVIDER_BASE_URL,
+        api_key_env=OCR_API_KEY_ENV,
         timeout=OCR_PROVIDER_TIMEOUT,
         max_result_chars=OCR_MAX_RESULT_CHARS,
         cwd=BASE_DIR,
@@ -1874,14 +1876,14 @@ async def fetch_and_recognize_one_media(ref: media.MediaRef, provider: vision.Vi
             allowed_content_types=OCR_ALLOWED_CONTENT_TYPES,
         )
     except Exception as exc:
-        log({"type": "ocr_fetch_error", "media": media_fetch.media_ref_log_summary(ref, include_url=OCR_LOG_IMAGE_URLS), "error": type(exc).__name__})
+        log({"type": "ocr_fetch_error", "media": media_fetch.media_ref_log_summary(ref, include_url=False), "error": type(exc).__name__})
         emit_perf_stat("ocr_fetch_result", status="exception", ok=False, error=type(exc).__name__, duration_ms=runtime_elapsed_ms(started), provider=provider_name)
         return media.MediaRecognition(index=ref.index, type=ref.type, status="error", provider=provider_name, error=type(exc).__name__)
 
     fetch_ms = runtime_elapsed_ms(started)
     log({
         "type": "media_fetch_done",
-        "media": media_fetch.media_ref_log_summary(ref, include_url=OCR_LOG_IMAGE_URLS),
+        "media": media_fetch.media_ref_log_summary(ref, include_url=False),
         "status": fetched.status,
         "error": fetched.error,
         "content_type": fetched.content_type,
@@ -1906,7 +1908,7 @@ async def fetch_and_recognize_one_media(ref: media.MediaRef, provider: vision.Vi
     provider_ms = runtime_elapsed_ms(provider_start)
     log_event = {
         "type": "ocr_done" if recognized.status == "ok" else "ocr_error",
-        "media": media_fetch.media_ref_log_summary(ref, include_url=OCR_LOG_IMAGE_URLS),
+        "media": media_fetch.media_ref_log_summary(ref, include_url=False),
         "provider": recognized.provider,
         "status": recognized.status,
         "result_chars": len(recognized.text or recognized.description or ""),
@@ -1923,8 +1925,6 @@ async def fetch_and_recognize_one_media(ref: media.MediaRef, provider: vision.Vi
         duration_ms=provider_ms,
         timeout_s=OCR_PROVIDER_TIMEOUT,
     )
-    if OCR_LOG_TEXT:
-        log_event["text"] = (recognized.text or recognized.description or "")[:OCR_MAX_RESULT_CHARS]
     log(log_event)
     return recognized
 
@@ -2060,7 +2060,7 @@ async def recognize_media_for_event(event: dict[str, Any], *, route: str, includ
         "message_id": message_id_from_event(event),
         "route": route,
         "count": len(refs),
-        "media": [media_fetch.media_ref_log_summary(ref, include_url=OCR_LOG_IMAGE_URLS) for ref in refs],
+        "media": [media_fetch.media_ref_log_summary(ref, include_url=False) for ref in refs],
     })
     if not ocr_enabled_for_route(route):
         log({"type": "ocr_skipped", "group_id": event.get("group_id"), "message_id": message_id_from_event(event), "route": route, "reason": "disabled_or_route"})
@@ -2154,7 +2154,7 @@ def _consume_ocr_context_task(task: asyncio.Task) -> None:
     except asyncio.CancelledError:
         log({"type": "ocr_context_task_cancelled"})
     except Exception as exc:
-        log({"type": "ocr_context_task_error", "error": type(exc).__name__, "message": str(exc)[:200]})
+        log({"type": "ocr_context_task_error", "error": type(exc).__name__})
 
 
 def schedule_context_ocr_for_event(event: dict[str, Any], *, base_text: str, identity: dict[str, str]) -> None:
