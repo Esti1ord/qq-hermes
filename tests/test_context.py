@@ -280,7 +280,7 @@ def test_deepseek_compression_fallback_keeps_complete_clause(monkeypatch):
 
     reply = bridge.finalize_deepseek_command_reply("第一句完整。第二句会很长很长很长很长很长很长很长很长。第三句也很长很长很长。", "问题", "搜索", 975805598)
 
-    assert reply == "第一句完整"
+    assert reply == "第一句完整。"
     assert len(reply) <= bridge.MAX_REPLY_CHARS
     assert not reply.endswith("很")
 

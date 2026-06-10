@@ -77,10 +77,10 @@ def test_proactive_reply_is_recorded_as_bot_context(monkeypatch):
     result = asyncio.run(run_event_and_drain(bridge, FakeRequest()))
 
     assert result["queued"] is True
-    assert sent == [(975805598, "这群今天像集体低电量")]
+    assert sent == [(975805598, "这群今天像集体低电量。")]
     context = bridge.format_recent_context(975805598)
     assert "发言人：Esti（QQ: 3975680980，机器人）" in context
-    assert "内容：这群今天像集体低电量" in context
+    assert "内容：这群今天像集体低电量。" in context
 
 
 def test_direct_reply_is_recorded_as_bot_context(monkeypatch):

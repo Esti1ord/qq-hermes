@@ -7,8 +7,8 @@
 ## Overview
 
 This directory captures executable backend contracts for the QQ Hermes bridge.
-The most important current contracts are runtime module organization and
-content-safe observability.
+The most important current contracts are runtime module organization,
+content-safe observability, and command fallback quality.
 
 ---
 

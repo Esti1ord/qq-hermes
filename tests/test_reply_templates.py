@@ -44,7 +44,7 @@ def test_finalize_reply_preserves_structured_lists():
 
     raw = "可以这样：\n\n1. 先检查日志\n2. 再重启服务"
 
-    assert bridge.finalize_reply(raw) == "可以这样：\n\n1 先检查日志\n2 再重启服务"
+    assert bridge.finalize_reply(raw) == "可以这样：\n\n1. 先检查日志\n2. 再重启服务"
 
 
 def test_web_search_failure_messages_use_template_pool(monkeypatch):

@@ -87,33 +87,34 @@ def test_missing_group_knowledge_uses_safe_fallback(tmp_path):
     assert "涉及事实请优先依靠联网搜索" not in prompt
 
 
-def test_prompt_requires_low_bot_feeling_without_fake_human_claims():
+def test_reply_prompts_require_low_bot_feeling_without_fake_human_claims():
     bridge = load_bridge_module()
 
-    prompt = bridge.build_prompt(make_event(text="你怎么看"), "你怎么看")
+    prompts = [
+        bridge.build_prompt(make_event(text="你怎么看"), "你怎么看"),
+        bridge.build_proactive_prompt(make_event(text="Esti 评价一下"), ["name:Esti"]),
+    ]
 
-    assert "尽量别让人一眼看出你是机器人" in prompt
-    assert "不要主动自称 AI、机器人、助手或模型" in prompt
-    assert "不要编造真人经历" in prompt
-    assert "标点风格强约束" in prompt
-    assert "少用句号和逗号" in prompt
-    assert "不要使用句号和引号" in prompt
+    for prompt in prompts:
+        assert "尽量别让人一眼看出你是机器人" in prompt
+        assert "不要主动自称 AI、机器人、助手或模型" in prompt
+        assert "不要编造真人经历" in prompt
+        assert "标点按自然表达保留" in prompt
+        assert "强行删除句号、逗号、引号或网址里的点号" in prompt
+        assert "标点风格强约束" not in prompt
+        assert "少用句号和逗号" not in prompt
+        assert "不要使用句号和引号" not in prompt
 
 
-def test_proactive_prompt_requires_low_bot_feeling_without_fake_human_claims():
+def test_finalize_reply_preserves_punctuation_by_default():
     bridge = load_bridge_module()
 
-    prompt = bridge.build_proactive_prompt(make_event(text="Esti 评价一下"), ["name:Esti"])
-
-    assert "尽量别让人一眼看出你是机器人" in prompt
-    assert "不要主动自称 AI、机器人、助手或模型" in prompt
-    assert "不要编造真人经历" in prompt
-    assert "标点风格强约束" in prompt
-    assert "少用句号和逗号" in prompt
-    assert "不要使用句号和引号" in prompt
+    assert bridge.PUNCTUATION_STYLE_ENABLED is False
+    assert bridge.finalize_reply('"这个确实可以，不过别急。"') == '"这个确实可以，不过别急。"'
+    assert bridge.finalize_reply("来源：https://code.claude.com/docs/en/fast-mode。") == "来源：https://code.claude.com/docs/en/fast-mode。"
 
 
-def test_finalize_reply_applies_punctuation_style():
+def test_finalize_reply_applies_punctuation_style_when_enabled():
     bridge = load_bridge_module()
     bridge.PUNCTUATION_STYLE_ENABLED = True
 

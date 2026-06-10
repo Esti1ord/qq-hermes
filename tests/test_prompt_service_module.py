@@ -110,7 +110,8 @@ def test_build_direct_prompt_renders_existing_direct_guidance():
     assert "好例：" in prompt
     assert "坏例：" in prompt
     assert "<SILENT>" not in prompt
-    assert "普通聊天不要声称自己正在联网搜索" in prompt
+    assert "any search skill" in prompt
+    assert "没有搜索证据时不要声称已联网" in prompt
     assert "只输出要发到群里的正文。" in prompt
 
 

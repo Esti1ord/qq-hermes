@@ -90,14 +90,14 @@ def test_direct_reply_analysis_records_user_context_and_final_reply(monkeypatch)
     result = asyncio.run(bridge.process_direct_reply_intent(975805598, {"kind": "direct", "event": event, "user_text": "Esti 你怎么看 Cookie: p_skey=secret", "trigger": "at"}))
 
     assert result["replied"] is True
-    assert sent == [(975805598, "[CQ:reply,id=702]可以 先看最近一句")]
+    assert sent == [(975805598, "[CQ:reply,id=702]可以，先看最近一句。")]
     kinds = [r["kind"] for r in records]
     assert "direct_generation_start" in kinds
     assert "direct_reply_sent" in kinds
     start = next(r for r in records if r["kind"] == "direct_generation_start")
     sent_record = next(r for r in records if r["kind"] == "direct_reply_sent")
     assert "p_skey" not in start["user_text"]["text"]
-    assert sent_record["reply"]["text"] == "可以 先看最近一句"
+    assert sent_record["reply"]["text"] == "可以，先看最近一句。"
     rendered = repr(records)
     assert "prompt" not in rendered
     assert "stdout" not in rendered

@@ -14,7 +14,7 @@ from . import matching
 DEFAULT_KNOWLEDGE_FALLBACK = "（本群没有配置知识库；涉及事实请优先依靠联网搜索和明确来源，不要编造。）"
 DEFAULT_GROUP_PROMPT_FALLBACK = "（本群没有额外群聊提示词）"
 DEFAULT_BASE_PERSONA_FALLBACK = "你是 QQ 群里的机器人伙伴 Esti，像熟人群友一样自然、简短、有边界地聊天。"
-NORMAL_CHAT_KNOWLEDGE_NOTICE = "（普通聊天不读取知识库；需要查证请使用 /search 命令。）"
+NORMAL_CHAT_KNOWLEDGE_NOTICE = "（普通聊天不读取知识库；涉及事实查证时优先使用可用搜索能力和明确来源，不要编造。）"
 
 SEARCH_GUIDANCE_MARKERS = [
     "联网搜索",

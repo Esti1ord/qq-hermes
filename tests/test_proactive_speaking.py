@@ -257,10 +257,10 @@ def test_non_at_group_message_can_trigger_proactive_reply(monkeypatch):
     result = asyncio.run(run_event_and_drain(bridge, FakeRequest()))
 
     assert result["queued"] is True
-    assert sent == [(975805598, "这群今天像集体低电量")]
+    assert sent == [(975805598, "这群今天像集体低电量。")]
     context = bridge.format_recent_context(975805598)
     assert "发言人：Esti（QQ: 3975680980，机器人）" in context
-    assert "内容：这群今天像集体低电量" in context
+    assert "内容：这群今天像集体低电量。" in context
 
 
 def test_duplicate_onebot_events_do_not_send_duplicate_proactive_replies(monkeypatch):
@@ -288,7 +288,7 @@ def test_duplicate_onebot_events_do_not_send_duplicate_proactive_replies(monkeyp
 
     assert first["queued"] is True
     assert second["ignored"] == "duplicate_event"
-    assert sent == [(975805598, "这群今天像集体低电量")]
+    assert sent == [(975805598, "这群今天像集体低电量。")]
 
 
 def test_parallel_proactive_triggers_are_queued_not_dropped(monkeypatch):
@@ -455,7 +455,7 @@ def test_non_at_estilord_message_sends_direct_qq_reply(monkeypatch):
     result = asyncio.run(run_event_and_drain(bridge, FakeRequest()))
 
     assert result["queued"] is True
-    assert sent == [(975805598, "[CQ:reply,id=987654]我在 怎么了")]
+    assert sent == [(975805598, "[CQ:reply,id=987654]我在，怎么了")]
 
 
 def test_name_trigger_records_metadata_but_keeps_rate_limit():

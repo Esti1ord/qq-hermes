@@ -45,6 +45,21 @@ def test_load_config_includes_prometheus_flags(tmp_path, monkeypatch):
     assert loaded.prometheus_include_group_id_label is True
 
 
+def test_load_config_disables_punctuation_style_by_default(tmp_path, monkeypatch):
+    monkeypatch.setenv("GROUP_IDS", "975805598")
+    monkeypatch.delenv("PUNCTUATION_STYLE_ENABLED", raising=False)
+
+    loaded = bridge_config.load_config(tmp_path)
+
+    assert loaded.punctuation_style_enabled is False
+
+    monkeypatch.setenv("PUNCTUATION_STYLE_ENABLED", "true")
+
+    loaded = bridge_config.load_config(tmp_path)
+
+    assert loaded.punctuation_style_enabled is True
+
+
 def test_load_dotenv_sets_missing_values_without_overwriting_existing(tmp_path, monkeypatch):
     env_file = tmp_path / ".env"
     env_file.write_text("A=one\nB='two'\nC=\"three\"\n# ignored\nBAD\n", encoding="utf-8")
