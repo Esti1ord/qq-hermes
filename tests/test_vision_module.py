@@ -267,7 +267,21 @@ def test_build_vision_provider_selects_hermes_model_or_noop(tmp_path):
     assert model_provider.max_result_chars == 321
 
 
-@pytest.mark.parametrize("alias", ["model", "model_vision", "openai", "openai_compatible"])
+def test_build_vision_provider_keeps_builtin_provider_names_out_of_model_aliases(tmp_path):
+    common = {
+        "hermes_bin": "hermes",
+        "model": "vision-model",
+        "base_url": "https://api.example.test/v1",
+        "api_key_env": "VISION_API_KEY",
+        "cwd": tmp_path,
+    }
+
+    assert isinstance(vision.build_vision_provider("none", **common), vision.NoopVisionProvider)
+    assert isinstance(vision.build_vision_provider("mock", **common), vision.MockVisionProvider)
+    assert isinstance(vision.build_vision_provider("hermes", **common), vision.HermesVisionProvider)
+
+
+@pytest.mark.parametrize("alias", ["model", "model_vision", "openai", "openai_compatible", "custom", "axonhub", "SiliconFlow"])
 def test_build_vision_provider_supports_model_aliases(alias):
     provider = vision.build_vision_provider(
         alias,

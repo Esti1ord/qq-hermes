@@ -200,6 +200,19 @@ class HermesVisionProvider:
         )
 
 
+OPENAI_COMPATIBLE_PROVIDER_ALIASES = {
+    "model",
+    "model_vision",
+    "openai",
+    "openai_compatible",
+    "openai-gpt",
+    "custom",
+    "axonhub",
+    "siliconflow",
+    "silicon-flow",
+}
+
+
 def build_vision_provider(
     provider: str,
     *,
@@ -223,7 +236,7 @@ def build_vision_provider(
             max_result_chars=max_result_chars,
             cwd=cwd,
         )
-    if name in {"model", "model_vision", "openai", "openai_compatible"}:
+    if name in OPENAI_COMPATIBLE_PROVIDER_ALIASES:
         return ModelVisionProvider(
             base_url=base_url,
             model=model,

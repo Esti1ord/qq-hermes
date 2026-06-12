@@ -13,7 +13,6 @@ import hashlib
 import json
 import os
 import re
-import shlex
 import subprocess
 import time
 from collections import deque
@@ -27,7 +26,7 @@ from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import PlainTextResponse
 from pydantic import BaseModel
 
-from qq_hermes_bridge import app_helpers, command_utils, commands, config_utils, content_analysis_log as analysis_log_utils, context_store, events, group_files, handlers, hermes_runtime, jrrp, logging_utils, matching, media, media_fetch, metrics, model_output, onebot, outbound, proactive, profiles, reply_processing, reply_queue, runtime_stats, search, search_runtime, self_learning, text_utils, user_controls, vision
+from qq_hermes_bridge import app_helpers, command_utils, commands, config_utils, content_analysis_log as analysis_log_utils, context_store, events, group_files, handlers, hermes_runtime, jrrp, logging_utils, matching, media, media_fetch, metrics, model_output, onebot, outbound, proactive, profiles, prompt_time, reply_processing, reply_queue, runtime_stats, self_learning, text_utils, user_controls, vision
 
 _RUNTIME_SOURCE_PATH = globals().get("_RUNTIME_PATH")
 BASE_DIR = (
@@ -42,6 +41,17 @@ LOG_FILE = LOG_DIR / "bridge.log"
 
 def load_dotenv(path: Path) -> None:
     config_utils.load_dotenv(path)
+
+
+def _env_first(*names: str, default: str = "") -> str:
+    return config_utils.env_first(*names, default=default)
+
+
+def _api_key_env_name(*, explicit_names: tuple[str, ...], raw_names: tuple[str, ...]) -> str:
+    raw_name = config_utils.env_name_if_set(*raw_names)
+    if raw_name:
+        return raw_name
+    return _env_first(*explicit_names)
 
 
 load_dotenv(BASE_DIR / ".env")
@@ -77,8 +87,11 @@ ONEBOT_HTTP_URL = os.getenv("ONEBOT_HTTP_URL", "http://127.0.0.1:3000").rstrip("
 ONEBOT_ACCESS_TOKEN = os.getenv("ONEBOT_ACCESS_TOKEN", "").strip()
 BRIDGE_INBOUND_TOKEN = os.getenv("BRIDGE_INBOUND_TOKEN", "").strip()
 HERMES_BIN = os.getenv("HERMES_BIN", "/home/roxy/.local/bin/hermes")
-HERMES_MODEL = os.getenv("HERMES_MODEL", "").strip()
-HERMES_PROVIDER = os.getenv("HERMES_PROVIDER", "").strip()
+HERMES_MODEL = _env_first("PRIMARY_CHAT_MODEL", "HERMES_MODEL")
+HERMES_PROVIDER = _env_first("PRIMARY_CHAT_MODEL_PROVIDER", "HERMES_PROVIDER")
+HERMES_FALLBACK_ENABLED = config_utils.parse_bool(os.getenv("HERMES_FALLBACK_ENABLED", "true"))
+HERMES_FALLBACK_MODEL = _env_first("VICE_CHAT_MODEL", "HERMES_FALLBACK_MODEL", default="deepseekv4flash")
+HERMES_FALLBACK_PROVIDER = _env_first("VICE_CHAT_MODEL_PROVIDER", "HERMES_FALLBACK_PROVIDER", default="官方")
 HERMES_MODEL_BY_GROUP = config_utils.parse_group_str_map(os.getenv("HERMES_MODEL_BY_GROUP", ""))
 HERMES_PROVIDER_BY_GROUP = config_utils.parse_group_str_map(os.getenv("HERMES_PROVIDER_BY_GROUP", ""))
 HERMES_GROUP_SESSIONS_ENABLED = os.getenv("HERMES_GROUP_SESSIONS_ENABLED", "true").lower() in {"1", "true", "yes"}
@@ -112,7 +125,7 @@ CONTEXT_PERSIST_ENABLED = os.getenv("CONTEXT_PERSIST_ENABLED", "false").lower() 
 CONTEXT_CACHE_FILE = Path(os.getenv("CONTEXT_CACHE_FILE", str(BASE_DIR / "logs" / "recent_context.jsonl")))
 OCR_ENABLED = config_utils.parse_bool(os.getenv("OCR_ENABLED", "false"))
 OCR_TRIGGER_MODE = os.getenv("OCR_TRIGGER_MODE", "direct_only").strip() or "direct_only"
-OCR_PROVIDER = os.getenv("OCR_PROVIDER", "hermes").strip() or "hermes"
+OCR_PROVIDER = _env_first("PRIMARY_OCR_MODEL_PROVIDER", "OCR_PROVIDER", default="hermes")
 OCR_EXTERNAL_PROVIDER_ALLOWED = config_utils.parse_bool(os.getenv("OCR_EXTERNAL_PROVIDER_ALLOWED", "false"))
 OCR_MAX_IMAGES_PER_MESSAGE = int(os.getenv("OCR_MAX_IMAGES_PER_MESSAGE", "2"))
 OCR_MAX_BYTES_PER_IMAGE = int(os.getenv("OCR_MAX_BYTES_PER_IMAGE", "6291456"))
@@ -125,9 +138,20 @@ OCR_INCLUDE_IN_CONTEXT = config_utils.parse_bool(os.getenv("OCR_INCLUDE_IN_CONTE
 OCR_PERSIST_TEXT_IN_CONTEXT = config_utils.parse_bool(os.getenv("OCR_PERSIST_TEXT_IN_CONTEXT", "false"))
 OCR_LOG_TEXT = config_utils.parse_bool(os.getenv("OCR_LOG_TEXT", "false"))
 OCR_LOG_IMAGE_URLS = config_utils.parse_bool(os.getenv("OCR_LOG_IMAGE_URLS", "false"))
-OCR_MODEL = os.getenv("OCR_MODEL", "").strip()
-OCR_PROVIDER_BASE_URL = os.getenv("OCR_PROVIDER_BASE_URL", "").strip()
-OCR_API_KEY_ENV = os.getenv("OCR_API_KEY_ENV", "").strip()
+OCR_MODEL = _env_first("PRIMARY_OCR_MODEL", "OCR_MODEL")
+OCR_PROVIDER_BASE_URL = _env_first("PRIMARY_OCR_MODEL_URL", "PRIMARY_OCR_MODEL_BASE_URL", "OCR_PROVIDER_BASE_URL")
+OCR_API_KEY_ENV = _api_key_env_name(
+    explicit_names=("PRIMARY_OCR_MODEL_API_KEY_ENV", "OCR_API_KEY_ENV"),
+    raw_names=("PRIMARY_OCR_MODEL_API_KEY", "PRIMARY_OCR_MODEL_API", "OCR_API_KEY"),
+)
+OCR_FALLBACK_ENABLED = config_utils.parse_bool(os.getenv("OCR_FALLBACK_ENABLED", "true"))
+OCR_FALLBACK_PROVIDER = _env_first("VICE_OCR_MODEL_PROVIDER", "OCR_FALLBACK_PROVIDER", default="model")
+OCR_FALLBACK_MODEL = _env_first("VICE_OCR_MODEL", "OCR_FALLBACK_MODEL", default="gpt-5.4")
+OCR_FALLBACK_PROVIDER_BASE_URL = _env_first("VICE_OCR_MODEL_URL", "VICE_OCR_MODEL_BASE_URL", "OCR_FALLBACK_PROVIDER_BASE_URL")
+OCR_FALLBACK_API_KEY_ENV = _api_key_env_name(
+    explicit_names=("VICE_OCR_MODEL_API_KEY_ENV", "OCR_FALLBACK_API_KEY_ENV"),
+    raw_names=("VICE_OCR_MODEL_API_KEY", "VICE_OCR_MODEL_API", "OCR_FALLBACK_API_KEY"),
+)
 OCR_IMAGE_PROMPT = os.getenv("OCR_IMAGE_PROMPT", vision.DEFAULT_IMAGE_PROMPT).strip() or vision.DEFAULT_IMAGE_PROMPT
 OCR_CONTEXT_GROUP_IDS = analysis_log_utils.parse_group_ids(os.getenv("OCR_CONTEXT_GROUP_IDS", ""))
 OCR_MAX_CONCURRENT_TASKS = max(1, int(os.getenv("OCR_MAX_CONCURRENT_TASKS", "2")))
@@ -178,7 +202,6 @@ PERF_OBS_SLOW_REPLY_MS = int(os.getenv("PERF_OBS_SLOW_REPLY_MS", "15000"))
 PERF_OBS_SLOW_HERMES_MS = int(os.getenv("PERF_OBS_SLOW_HERMES_MS", "10000"))
 PERF_OBS_SLOW_SEND_MS = int(os.getenv("PERF_OBS_SLOW_SEND_MS", "3000"))
 PERF_OBS_SLOW_OCR_MS = int(os.getenv("PERF_OBS_SLOW_OCR_MS", "8000"))
-PERF_OBS_SLOW_SEARCH_MS = int(os.getenv("PERF_OBS_SLOW_SEARCH_MS", "10000"))
 PERF_OBS_INTERACTION_TTL_SECONDS = float(os.getenv("PERF_OBS_INTERACTION_TTL_SECONDS", "3600"))
 PERF_OBS_MAX_INTERACTIONS = int(os.getenv("PERF_OBS_MAX_INTERACTIONS", "2000"))
 JRRP_STATE_FILE = Path(os.getenv("JRRP_STATE_FILE", str(LOG_DIR / "jrrp_state.json")))
@@ -219,18 +242,6 @@ PROACTIVE_NIGHT_START = os.getenv("PROACTIVE_NIGHT_START", "00:30")
 PROACTIVE_NIGHT_END = os.getenv("PROACTIVE_NIGHT_END", "08:30")
 PROACTIVE_NIGHT_SCORE_MULTIPLIER = float(os.getenv("PROACTIVE_NIGHT_SCORE_MULTIPLIER", "0.2"))
 PROACTIVE_SENSITIVE_KEYWORDS = env_list("PROACTIVE_SENSITIVE_KEYWORDS", "密码,验证码,账号,诈骗,开盒,身份证,裸照")
-WEB_SEARCH_ENABLED = os.getenv("WEB_SEARCH_ENABLED", "true").lower() in {"1", "true", "yes"}
-WEB_SEARCH_TIMEOUT = int(os.getenv("WEB_SEARCH_TIMEOUT", "45"))
-WEB_SEARCH_MAX_CHARS = int(os.getenv("WEB_SEARCH_MAX_CHARS", "1200"))
-WEB_SEARCH_BACKEND = os.getenv("WEB_SEARCH_BACKEND", "curl").strip().lower()
-WEB_SEARCH_MODEL = os.getenv("WEB_SEARCH_MODEL", HERMES_MODEL).strip() or HERMES_MODEL
-WEB_SEARCH_PROVIDER = os.getenv("WEB_SEARCH_PROVIDER", HERMES_PROVIDER).strip()
-WEB_SEARCH_HTTP_TIMEOUT = float(os.getenv("WEB_SEARCH_HTTP_TIMEOUT", "8"))
-WEB_SEARCH_MAX_SUCCESSFUL_FETCHES = int(os.getenv("WEB_SEARCH_MAX_SUCCESSFUL_FETCHES", "3"))
-WEB_SEARCH_NOTICE_ENABLED = os.getenv("WEB_SEARCH_NOTICE_ENABLED", "true").lower() in {"1", "true", "yes"}
-WEB_SEARCH_NOTICE_TEXT = os.getenv("WEB_SEARCH_NOTICE_TEXT", "我先联网查一下").strip() or "我先联网查一下"
-DEEPSEEK_COMMAND_MODEL = os.getenv("DEEPSEEK_COMMAND_MODEL", HERMES_MODEL or "gpt-5.5").strip() or "gpt-5.5"
-DEEPSEEK_COMMAND_PROVIDER = os.getenv("DEEPSEEK_COMMAND_PROVIDER", HERMES_PROVIDER).strip()
 STYLE_HINTS = [
     "像群友随口接话，短一点，不要端着。",
     "可以轻微吐槽，但别攻击人，也别拱火。",
@@ -252,22 +263,9 @@ REPLY_TEMPLATES = {
         "这下没处理好 先缓一下",
         "我这边断了一下 等会再来",
     ],
-    "web_search_failed": [
-        "（联网搜索刚才失败了；回复时说明不确定，别编最新信息。）",
-        "（这次搜索没跑通；回复时按不确定处理，不要硬编。）",
-        "（实时检索失败；只能说明没查准，不要补旧消息。）",
-    ],
-    "web_search_no_match": [
-        "没搜到特别可靠的结果 先别当准信",
-        "这次没搜准 可能得换个关键词",
-        "没查到够稳的来源 先按不确定处理",
-    ],
-    "web_search_empty": [
-        "（联网搜索没有明确结果；回复时说明不确定。）",
-        "（搜索摘录不够明确；回复时别下定论。）",
-        "（没拿到清楚结果；回复时说还没查准。）",
-    ],
 }
+
+DIRECT_GENERATION_FAILURE_NOTICE = "没有油烧了谁给我加加油"
 
 
 def pick_template(name: str, key: str = "") -> str:
@@ -644,9 +642,6 @@ def normal_chat_knowledge_for_prompt(group_id: int | None = None) -> str:
     return group_files.normal_chat_knowledge_for_prompt()
 
 
-def search_knowledge_for_prompt(group_id: int | None = None) -> str:
-    return knowledge_for_prompt(group_id)
-
 
 def recent_messages_for_group(group_id: int) -> deque[dict[str, Any]]:
     return context_store.recent_messages_for_group(group_id, _recent_messages_by_group)
@@ -785,7 +780,7 @@ def reply_queue_size(group_id: int) -> int:
 
 def load_text_file(path: Path, fallback: str) -> str:
     def on_error(exc: Exception, error_path: Path) -> None:
-        log({"type": "profile_file_error", "path": str(error_path), "error": type(exc).__name__, "message": str(exc)})
+        log({"type": "profile_file_error", "path": str(error_path), "error": type(exc).__name__})
 
     return group_files.load_text_file(path, fallback, on_error=on_error)
 
@@ -879,7 +874,7 @@ def load_context_cache() -> None:
     except FileNotFoundError:
         return
     except Exception as exc:
-        log({"type": "context_cache_error", "error": type(exc).__name__, "message": str(exc)})
+        log({"type": "context_cache_error", "error": type(exc).__name__})
         return
     _recent_messages.clear()
     _recent_messages_by_group.clear()
@@ -969,232 +964,8 @@ def style_hint_for(event: dict[str, Any]) -> str:
     return user_controls.style_hint_for(event, style_hints=STYLE_HINTS, message_to_text_fn=message_to_text)
 
 
-def needs_web_search(text: str) -> bool:
-    return search.needs_web_search(text, web_search_enabled=WEB_SEARCH_ENABLED)
-
-
 def current_date_context(now: datetime | None = None) -> str:
-    return search.current_date_context(now)
-
-
-def normalize_search_query(query: str) -> str:
-    return search.normalize_search_query(query)
-
-
-def _compact_search_terms(text: str, limit: int = 160) -> str:
-    return search.compact_search_terms(text, limit=limit)
-
-
-def _salient_latin_terms(text: str) -> list[str]:
-    return search.salient_latin_terms(text)
-
-
-def plan_search_queries(query: str) -> list[str]:
-    return search.plan_search_queries(query)
-
-
-def candidate_urls_from_query(q: str) -> list[str]:
-    return search.candidate_urls_from_query(q)
-
-
-def jina_url_for_source(url: str) -> str:
-    return search.jina_url_for_source(url)
-
-
-def search_urls_for_query(q: str) -> list[str]:
-    return search.search_urls_for_query(q)
-
-
-def usable_search_output(text: str) -> bool:
-    return search.usable_search_output(text)
-
-
-def verify_search_evidence(query: str, normalized_query: str, evidence: str, date_context: str) -> str:
-    start = runtime_now()
-    verify_prompt = search_runtime.build_curl_verify_prompt(
-        query=query,
-        normalized_query=normalized_query,
-        evidence=evidence,
-        date_context=date_context,
-    )
-    p = subprocess.run(build_hermes_cmd(verify_prompt, use_group_session=False, model=WEB_SEARCH_MODEL, provider=WEB_SEARCH_PROVIDER), text=True, capture_output=True, timeout=WEB_SEARCH_TIMEOUT, cwd=str(BASE_DIR))
-    emit_perf_stat(
-        "web_search_verify_result",
-        backend="curl",
-        duration_ms=runtime_elapsed_ms(start),
-        ok=p.returncode == 0,
-        returncode=p.returncode,
-        evidence_len=len(evidence or ""),
-        output_len=len(p.stdout or ""),
-        model_configured=bool(WEB_SEARCH_MODEL),
-        provider_configured=bool(WEB_SEARCH_PROVIDER),
-    )
-    if p.returncode != 0:
-        log({"type": "web_search_verify_error", "returncode": p.returncode, "stdout": (p.stdout or "")[-800:], "stderr": (p.stderr or "")[-800:]})
-        return ""
-    return strip_session_footer(p.stdout or "").strip()
-
-
-def fetch_search_url(url: str) -> subprocess.CompletedProcess[str]:
-    start = runtime_now()
-    p = subprocess.run(
-        ["curl", "-L", "-sS", "--max-time", str(int(WEB_SEARCH_HTTP_TIMEOUT)), url],
-        text=True,
-        capture_output=True,
-        timeout=WEB_SEARCH_HTTP_TIMEOUT + 2,
-        cwd=str(BASE_DIR),
-    )
-    emit_perf_stat(
-        "web_search_fetch_result",
-        backend="curl",
-        duration_ms=runtime_elapsed_ms(start),
-        ok=p.returncode == 0,
-        returncode=p.returncode,
-        output_len=len(p.stdout or ""),
-    )
-    return p
-
-
-def run_curl_search(query: str) -> str:
-    return search_runtime.run_curl_search(
-        query,
-        normalize_query_fn=normalize_search_query,
-        current_date_context_fn=current_date_context,
-        plan_search_queries_fn=plan_search_queries,
-        search_urls_for_query_fn=search_urls_for_query,
-        fetch_url_fn=fetch_search_url,
-        usable_search_output_fn=usable_search_output,
-        verify_search_evidence_fn=verify_search_evidence,
-        log_fn=log,
-        max_successful_fetches=WEB_SEARCH_MAX_SUCCESSFUL_FETCHES,
-    )
-
-
-def run_llm_web_search(query: str, normalized_query: str, date_context: str) -> str:
-    search_prompt = search_runtime.build_llm_search_prompt(
-        query=query,
-        normalized_query=normalized_query,
-        date_context=date_context,
-    )
-    cmd = build_hermes_cmd(search_prompt, use_group_session=False, model=WEB_SEARCH_MODEL, provider=WEB_SEARCH_PROVIDER)
-    log({"type": "web_search_start", "query": query[:200]})
-    try:
-        p = subprocess.run(cmd, text=True, capture_output=True, timeout=WEB_SEARCH_TIMEOUT, cwd=str(BASE_DIR))
-    except Exception as exc:
-        log({"type": "web_search_error", "error": type(exc).__name__, "message": str(exc)})
-        return pick_template("web_search_failed", normalized_query)
-    if p.returncode != 0:
-        log({"type": "web_search_error", "returncode": p.returncode, "stderr": p.stderr[-800:]})
-        return pick_template("web_search_failed", normalized_query)
-    return search_runtime.finalize_llm_search_result(
-        p.stdout or "",
-        normalized_query=normalized_query,
-        max_chars=WEB_SEARCH_MAX_CHARS,
-        empty_reply_fn=lambda query_text: pick_template("web_search_empty", query_text),
-    )
-
-
-def run_web_search(query: str) -> str:
-    start = runtime_now()
-    result = search_runtime.run_web_search(
-        query,
-        web_search_enabled=WEB_SEARCH_ENABLED,
-        web_search_backend=WEB_SEARCH_BACKEND,
-        normalize_query_fn=normalize_search_query,
-        current_date_context_fn=current_date_context,
-        run_curl_search_fn=run_curl_search,
-        run_llm_search_fn=run_llm_web_search,
-        pick_template_fn=pick_template,
-        log_fn=log,
-        max_chars=WEB_SEARCH_MAX_CHARS,
-    )
-    emit_perf_stat(
-        "web_search_result",
-        backend=WEB_SEARCH_BACKEND,
-        duration_ms=runtime_elapsed_ms(start),
-        ok=bool(result),
-        query_len=len(query or ""),
-        query_len_bucket=runtime_stats.length_bucket(len(query or "")),
-        result_len=len(result or ""),
-    )
-    return result
-
-
-def search_command_fallback_reply(query: str) -> str:
-    return search.search_command_fallback_reply(
-        query,
-        no_match_reply=pick_template("web_search_no_match", re.sub(r"\s+", " ", query or "").strip()),
-    )
-
-
-def run_search_command_search(query: str, group_id: int | None = None) -> str:
-    clean = re.sub(r"\s+", " ", query or "").strip()
-    if not clean:
-        return "用法：/search 你要查的内容"
-    search_input = build_search_command_prompt(clean, group_id) if WEB_SEARCH_BACKEND == "llm" else clean
-    result = run_web_search(search_input)
-    if not result:
-        return search_command_fallback_reply(clean)
-    if result in REPLY_TEMPLATES.get("web_search_no_match", []) or result in REPLY_TEMPLATES.get("web_search_empty", []):
-        return search_command_fallback_reply(clean)
-    if result in REPLY_TEMPLATES.get("web_search_failed", []):
-        return "搜索刚才跑挂了 稍后再试或换个关键词"
-    return result[:WEB_SEARCH_MAX_CHARS]
-
-
-def build_search_query(text: str, event: dict[str, Any] | None = None, group_id: int | None = None) -> str:
-    base = re.sub(r"\s+", " ", text or "").strip()
-    if event is None and group_id is None:
-        return base
-    gid = group_id if group_id is not None else group_id_from_event(event or {})
-    parts = [f"原问题：{base}"]
-    if event is not None:
-        reply_context = reply_context_from_event(event)
-        if reply_context and "没有引用/回复上下文" not in reply_context:
-            parts.append(f"被回复/引用消息：{reply_context[:500]}")
-    recent_items = list(recent_messages_for_group(gid or TARGET_GROUP_ID))[-5:]
-    recent_lines = []
-    for item in recent_items:
-        role = str(item.get("role") or "").strip()
-        if "机器人" in role:
-            continue
-        name = str(item.get("name") or item.get("user_id") or "群友")
-        msg = re.sub(r"\s+", " ", str(item.get("text") or "")).strip()
-        if msg and msg != base and msg not in base:
-            recent_lines.append(f"{name}：{msg[:120]}")
-    if recent_lines:
-        parts.append("群聊近期上下文：" + " / ".join(recent_lines))
-    return "\n".join(parts)[:1000]
-
-
-def web_search_context_for_text(text: str, event: dict[str, Any] | None = None, group_id: int | None = None) -> str:
-    if not needs_web_search(text):
-        return "（当前消息不需要联网搜索。）"
-    date_context = current_date_context()
-    search_query = build_search_query(text, event=event, group_id=group_id)
-    result = run_web_search(search_query)
-    return f"{date_context}\n联网搜索结果：\n{result}\n\n如果联网搜索结果不足或冲突，请在回复中明确说不确定，不要把传闻当定论；不要用去年、旧赛季或不匹配赛事的结果代替当前问题。"
-
-
-def build_prompt_with_search_flag(event: dict[str, Any], user_text: str) -> tuple[str, bool]:
-    return build_prompt(event, user_text), needs_web_search(user_text)
-
-
-def build_proactive_prompt_with_search_flag(event: dict[str, Any], reasons: list[str]) -> tuple[str, bool]:
-    text = message_to_text(event.get("message"))
-    return build_proactive_prompt(event, reasons), needs_web_search(text)
-
-
-async def maybe_send_web_search_notice(group_id: int, search_needed: bool) -> bool:
-    if not WEB_SEARCH_NOTICE_ENABLED or not search_needed:
-        return False
-    data = await send_group_msg(group_id, WEB_SEARCH_NOTICE_TEXT)
-    if send_group_msg_succeeded(data):
-        remember_bot_reply(group_id, WEB_SEARCH_NOTICE_TEXT)
-        return True
-    log({"type": "web_search_notice_send_failed", "group_id": group_id, "response": data})
-    return False
-
+    return prompt_time.current_date_context(now)
 
 def extract_person_profile(user_id: Any, nickname: str, people_file: Path | None = None) -> str:
     if people_file is None:
@@ -1285,7 +1056,7 @@ def summarize_context_messages(group_id: int, messages: list[dict[str, Any]]) ->
     try:
         summary = run_hermes(summarization_prompt(group_id, messages))
     except Exception as exc:
-        log({"type": "context_summary_error", "group_id": group_id, "error": type(exc).__name__, "message": str(exc)})
+        log({"type": "context_summary_error", "group_id": group_id, "error": type(exc).__name__})
         summary = "；".join(str(m.get("text") or "") for m in messages)
     return finalize_summary(summary)
 
@@ -1332,7 +1103,7 @@ def compact_context_if_needed(group_id: int) -> None:
     summary = finalize_summary(summary)
     if summary:
         context_summaries_for_group(group_id).append(summary)
-        log({"type": "context_compacted", "group_id": group_id, "messages": len(old_messages), "summary": summary})
+        log({"type": "context_compacted", "group_id": group_id, "messages": len(old_messages), "summary_len": len(summary or "")})
         runtime_stat(
             "context_compaction",
             group_id=group_id,
@@ -1405,8 +1176,6 @@ def collect_self_learning_sample_for_item(group_id: int, item: dict[str, Any]) -
     text_for_command_check = str(learning_text or "")
     is_command = (
         is_context_command(text_for_command_check)
-        or is_search_command(text_for_command_check)
-        or is_deepseek_command(text_for_command_check)
         or is_jrrp_command(text_for_command_check)
     )
     self_learning.collect_learning_sample(
@@ -1497,7 +1266,7 @@ def is_jrrp_command(text: str) -> bool:
 def load_jrrp_state() -> dict[str, Any]:
     return jrrp.load_json_dict(
         JRRP_STATE_FILE,
-        on_error=lambda exc: log({"type": "jrrp_state_load_error", "error": type(exc).__name__, "message": str(exc)}),
+        on_error=lambda exc: log({"type": "jrrp_state_load_error", "error": type(exc).__name__}),
     )
 
 
@@ -1505,14 +1274,14 @@ def save_jrrp_state(state: dict[str, Any]) -> None:
     jrrp.save_json_dict(
         JRRP_STATE_FILE,
         state,
-        on_error=lambda exc: log({"type": "jrrp_state_save_error", "error": type(exc).__name__, "message": str(exc)}),
+        on_error=lambda exc: log({"type": "jrrp_state_save_error", "error": type(exc).__name__}),
     )
 
 
 def load_jrrp_results() -> dict[str, Any]:
     return jrrp.load_json_dict(
         JRRP_RESULTS_FILE,
-        on_error=lambda exc: log({"type": "jrrp_results_load_error", "error": type(exc).__name__, "message": str(exc)}),
+        on_error=lambda exc: log({"type": "jrrp_results_load_error", "error": type(exc).__name__}),
     )
 
 
@@ -1550,24 +1319,6 @@ def _slash_command_query(text: str, command: str) -> str:
 def is_context_command(text: str) -> bool:
     """用户显式请求查看本群本地上下文缓存。"""
     return command_utils.is_context_command(text)
-
-
-def is_search_command(text: str) -> bool:
-    """用户显式请求联网搜索；普通聊天不自动搜索。"""
-    return command_utils.is_search_command(text)
-
-
-def search_command_query(text: str) -> str:
-    return command_utils.search_command_query(text)
-
-
-def is_deepseek_command(text: str) -> bool:
-    """/deepseek 是独立深度搜索命令名，与 DeepSeek 模型无关。"""
-    return command_utils.is_deepseek_command(text)
-
-
-def deepseek_command_query(text: str) -> str:
-    return command_utils.deepseek_command_query(text)
 
 
 def is_context_command_bot_output(item: dict[str, Any]) -> bool:
@@ -1819,8 +1570,32 @@ def ocr_enabled_for_route(route: str) -> bool:
     return route == "direct"
 
 
+def _ocr_provider_key(provider: str | None, model: str | None, base_url: str | None, api_key_env: str | None) -> tuple[str, str, str, str]:
+    return (
+        str(provider or "").strip().lower(),
+        str(model or "").strip().lower(),
+        str(base_url or "").strip(),
+        str(api_key_env or "").strip(),
+    )
+
+
 def build_ocr_provider() -> vision.VisionProvider:
-    if str(OCR_PROVIDER or "").strip().lower() not in {"none", "mock"} and not OCR_EXTERNAL_PROVIDER_ALLOWED:
+    provider_name = str(OCR_PROVIDER or "").strip().lower()
+    if provider_name in {"", "none"}:
+        return vision.NoopVisionProvider()
+    if provider_name == "mock":
+        return vision.build_vision_provider(
+            OCR_PROVIDER,
+            hermes_bin=HERMES_BIN,
+            model=OCR_MODEL or HERMES_MODEL,
+            hermes_provider=HERMES_PROVIDER,
+            base_url=OCR_PROVIDER_BASE_URL,
+            api_key_env=OCR_API_KEY_ENV,
+            timeout=OCR_PROVIDER_TIMEOUT,
+            max_result_chars=OCR_MAX_RESULT_CHARS,
+            cwd=BASE_DIR,
+        )
+    if not OCR_ENABLED or not OCR_EXTERNAL_PROVIDER_ALLOWED:
         return vision.NoopVisionProvider()
     return vision.build_vision_provider(
         OCR_PROVIDER,
@@ -1829,6 +1604,34 @@ def build_ocr_provider() -> vision.VisionProvider:
         hermes_provider=HERMES_PROVIDER,
         base_url=OCR_PROVIDER_BASE_URL,
         api_key_env=OCR_API_KEY_ENV,
+        timeout=OCR_PROVIDER_TIMEOUT,
+        max_result_chars=OCR_MAX_RESULT_CHARS,
+        cwd=BASE_DIR,
+    )
+
+
+def ocr_fallback_available() -> bool:
+    if not OCR_FALLBACK_ENABLED:
+        return False
+    if not OCR_EXTERNAL_PROVIDER_ALLOWED:
+        return False
+    if str(OCR_FALLBACK_PROVIDER or "").strip().lower() in {"", "none"}:
+        return False
+    primary = _ocr_provider_key(OCR_PROVIDER, OCR_MODEL or HERMES_MODEL, OCR_PROVIDER_BASE_URL, OCR_API_KEY_ENV)
+    fallback = _ocr_provider_key(OCR_FALLBACK_PROVIDER, OCR_FALLBACK_MODEL, OCR_FALLBACK_PROVIDER_BASE_URL, OCR_FALLBACK_API_KEY_ENV)
+    return fallback != primary
+
+
+def build_ocr_fallback_provider() -> vision.VisionProvider:
+    if not ocr_fallback_available():
+        return vision.NoopVisionProvider()
+    return vision.build_vision_provider(
+        OCR_FALLBACK_PROVIDER,
+        hermes_bin=HERMES_BIN,
+        model=OCR_FALLBACK_MODEL,
+        hermes_provider=HERMES_PROVIDER,
+        base_url=OCR_FALLBACK_PROVIDER_BASE_URL,
+        api_key_env=OCR_FALLBACK_API_KEY_ENV,
         timeout=OCR_PROVIDER_TIMEOUT,
         max_result_chars=OCR_MAX_RESULT_CHARS,
         cwd=BASE_DIR,
@@ -1903,30 +1706,75 @@ async def fetch_and_recognize_one_media(ref: media.MediaRef, provider: vision.Vi
     if fetched.status != "ok":
         return media.MediaRecognition(index=ref.index, type=ref.type, status="error", provider=provider_name, error=fetched.error or fetched.status)
 
-    provider_start = runtime_now()
-    recognized = await asyncio.to_thread(provider.recognize_image, fetched, prompt=OCR_IMAGE_PROMPT)
-    provider_ms = runtime_elapsed_ms(provider_start)
+    recognized = await recognize_image_with_fallback(fetched, provider)
     log_event = {
         "type": "ocr_done" if recognized.status == "ok" else "ocr_error",
         "media": media_fetch.media_ref_log_summary(ref, include_url=False),
-        "provider": recognized.provider,
+        "provider": recognized.provider or provider_name,
         "status": recognized.status,
         "result_chars": len(recognized.text or recognized.description or ""),
         "error": recognized.error,
-        "duration_ms": provider_ms,
     }
-    emit_perf_stat(
-        "ocr_provider_result",
-        provider=recognized.provider or provider_name,
-        status=recognized.status,
-        ok=recognized.status == "ok",
-        error=recognized.error or "",
-        result_len=len(recognized.text or recognized.description or ""),
-        duration_ms=provider_ms,
-        timeout_s=OCR_PROVIDER_TIMEOUT,
-    )
     log(log_event)
     return recognized
+
+
+async def recognize_image_with_fallback(fetched: media_fetch.MediaFetchResult, primary_provider: vision.VisionProvider) -> media.MediaRecognition:
+    primary_name = getattr(primary_provider, "name", OCR_PROVIDER)
+    primary_start = runtime_now()
+    primary = await asyncio.to_thread(primary_provider.recognize_image, fetched, prompt=OCR_IMAGE_PROMPT)
+    primary_ms = runtime_elapsed_ms(primary_start)
+    emit_perf_stat(
+        "ocr_provider_result",
+        provider=primary.provider or primary_name,
+        status=primary.status,
+        ok=primary.status == "ok",
+        error=primary.error or "",
+        result_len=len(primary.text or primary.description or ""),
+        duration_ms=primary_ms,
+        timeout_s=OCR_PROVIDER_TIMEOUT,
+        phase="primary",
+    )
+    if primary.status == "ok":
+        return primary
+
+    fallback_provider = build_ocr_fallback_provider()
+    if isinstance(fallback_provider, vision.NoopVisionProvider):
+        return primary
+
+    fallback_name = getattr(fallback_provider, "name", OCR_FALLBACK_PROVIDER)
+    log({
+        "type": "ocr_fallback_attempt",
+        "provider": primary.provider or primary_name,
+        "fallback_provider": fallback_name,
+        "status": primary.status,
+        "error": primary.error or "",
+    })
+    fallback_start = runtime_now()
+    fallback = await asyncio.to_thread(fallback_provider.recognize_image, fetched, prompt=OCR_IMAGE_PROMPT)
+    fallback_ms = runtime_elapsed_ms(fallback_start)
+    emit_perf_stat(
+        "ocr_provider_result",
+        provider=fallback.provider or fallback_name,
+        status=fallback.status,
+        ok=fallback.status == "ok",
+        error=fallback.error or "",
+        result_len=len(fallback.text or fallback.description or ""),
+        duration_ms=fallback_ms,
+        timeout_s=OCR_PROVIDER_TIMEOUT,
+        phase="fallback",
+    )
+    log({
+        "type": "ocr_fallback_result",
+        "provider": fallback.provider or fallback_name,
+        "status": fallback.status,
+        "error": fallback.error or "",
+        "result_chars": len(fallback.text or fallback.description or ""),
+        "duration_ms": fallback_ms,
+    })
+    if fallback.status == "ok":
+        return fallback
+    return fallback
 
 
 def reindex_media_recognition(result: media.MediaRecognition, ref: media.MediaRef) -> media.MediaRecognition:
@@ -2068,9 +1916,11 @@ async def recognize_media_for_event(event: dict[str, Any], *, route: str, includ
         return {"refs": refs, "results": [], "media_context": "（当前消息没有图片识别结果）"}
     provider = build_ocr_provider()
     if isinstance(provider, vision.NoopVisionProvider):
-        log({"type": "ocr_skipped", "group_id": event.get("group_id"), "message_id": message_id_from_event(event), "route": route, "reason": "provider_none"})
-        emit_perf_stat("ocr_route_result", route=route, group_id=event.get("group_id"), media_count=len(refs), ok_count=0, error_count=0, skipped_count=len(refs), duration_ms=runtime_elapsed_ms(start), enabled=True, provider="none", reason="provider_none")
-        return {"refs": refs, "results": [], "media_context": "（当前消息没有图片识别结果）"}
+        fallback_provider = build_ocr_fallback_provider()
+        if isinstance(fallback_provider, vision.NoopVisionProvider):
+            log({"type": "ocr_skipped", "group_id": event.get("group_id"), "message_id": message_id_from_event(event), "route": route, "reason": "provider_none"})
+            emit_perf_stat("ocr_route_result", route=route, group_id=event.get("group_id"), media_count=len(refs), ok_count=0, error_count=0, skipped_count=len(refs), duration_ms=runtime_elapsed_ms(start), enabled=True, provider="none", reason="provider_none")
+            return {"refs": refs, "results": [], "media_context": "（当前消息没有图片识别结果）"}
     results = [await fetch_and_recognize_one_media_cached(ref, provider) for ref in refs]
     ok_count = sum(1 for result in results if result.status == "ok")
     error_count = sum(1 for result in results if result.status == "error")
@@ -2194,7 +2044,7 @@ def _sqlite_message_count_for_session(session_id: str) -> int:
         db_path = Path(os.getenv("HERMES_HOME", "/home/roxy/.hermes")) / "state.db"
         return hermes_runtime.sqlite_message_count_for_session(session_id, db_path=db_path)
     except Exception as exc:
-        log({"type": "hermes_session_inspect_error", "session_id": session_id, "error": type(exc).__name__, "message": str(exc)})
+        log({"type": "hermes_session_inspect_error", "session_id": session_id, "error": type(exc).__name__})
         return 0
 
 
@@ -2203,7 +2053,7 @@ def _estimated_session_body_chars(session_id: str) -> int:
         db_path = Path(os.getenv("HERMES_HOME", "/home/roxy/.hermes")) / "state.db"
         return hermes_runtime.estimated_session_body_chars(session_id, db_path=db_path)
     except Exception as exc:
-        log({"type": "hermes_session_inspect_error", "session_id": session_id, "error": type(exc).__name__, "message": str(exc)})
+        log({"type": "hermes_session_inspect_error", "session_id": session_id, "error": type(exc).__name__})
         return 0
 
 
@@ -2212,7 +2062,7 @@ def hermes_session_id_by_title(session_name: str) -> str:
         db_path = Path(os.getenv("HERMES_HOME", "/home/roxy/.hermes")) / "state.db"
         return hermes_runtime.session_id_by_title(session_name, db_path=db_path)
     except Exception as exc:
-        log({"type": "hermes_session_lookup_error", "session_name": session_name, "error": type(exc).__name__, "message": str(exc)})
+        log({"type": "hermes_session_lookup_error", "session_name": session_name, "error": type(exc).__name__})
         return ""
 
 
@@ -2243,17 +2093,16 @@ def delete_hermes_session(session_id: str, reason: str) -> bool:
     try:
         r = subprocess.run(cmd, text=True, capture_output=True, timeout=30, cwd=str(BASE_DIR))
     except Exception as exc:
-        log({"type": "hermes_session_delete_error", "session_id": session_id, "reason": reason, "error": type(exc).__name__, "message": str(exc)})
+        log({"type": "hermes_session_delete_error", "session_id": session_id, "reason": reason, "error": type(exc).__name__})
         return False
-    log(
-        hermes_runtime.session_delete_log_event(
-            session_id=session_id,
-            reason=reason,
-            returncode=r.returncode,
-            stdout=r.stdout or "",
-            stderr=r.stderr or "",
-        )
-    )
+    log({
+        "type": "hermes_session_deleted" if r.returncode == 0 else "hermes_session_delete_error",
+        "session_id": session_id,
+        "reason": reason,
+        "returncode": r.returncode,
+        "stdout_len": len(r.stdout or ""),
+        "stderr_len": len(r.stderr or ""),
+    })
     return r.returncode == 0
 
 
@@ -2275,7 +2124,14 @@ def compact_group_hermes_session_if_needed(group_id: int | None) -> bool:
         new_session_id = extract_session_id((p.stdout or "") + "\n" + (p.stderr or ""))
         log({"type": "hermes_session_autocompact_done", "group_id": gid, "old_session_id": session_id, "new_session_id": new_session_id})
         return True
-    log({"type": "hermes_session_autocompact_error", "group_id": gid, "old_session_id": session_id, "returncode": getattr(p, "returncode", None), "stdout": (getattr(p, "stdout", "") or "")[-1000:], "stderr": (getattr(p, "stderr", "") or "")[-1000:]})
+    log({
+        "type": "hermes_session_autocompact_error",
+        "group_id": gid,
+        "old_session_id": session_id,
+        "returncode": getattr(p, "returncode", None),
+        "stdout_len": len(getattr(p, "stdout", "") or ""),
+        "stderr_len": len(getattr(p, "stderr", "") or ""),
+    })
     return False
 
 
@@ -2320,7 +2176,14 @@ def build_hermes_cmd(prompt: str, group_id: int | None = None, use_group_session
 
 
 def run_hermes_cmd(cmd: list[str], *, purpose: str = "unknown", group_id: int | None = None, use_group_session: bool = True, input_chars: int = 0) -> subprocess.CompletedProcess[str] | None:
-    log({"type": "hermes_start", "cmd": " ".join(shlex.quote(x) for x in cmd[:3] + ["<prompt>"] + cmd[4:])})
+    log({
+        "type": "hermes_start",
+        "purpose": purpose,
+        "group_id": group_id,
+        "use_group_session": use_group_session,
+        "has_model": "--model" in cmd,
+        "has_provider": "--provider" in cmd,
+    })
     start = time.monotonic()
     try:
         result = subprocess.run(cmd, text=True, capture_output=True, timeout=HERMES_TIMEOUT, cwd=str(BASE_DIR))
@@ -2346,7 +2209,7 @@ def run_hermes_cmd(cmd: list[str], *, purpose: str = "unknown", group_id: int | 
         runtime_stat("hermes_call", purpose=purpose, group_id=group_id, use_group_session=use_group_session, duration_ms=runtime_stats.duration_ms(start), ok=False, error="FileNotFoundError", input_chars=input_chars, timeout_s=HERMES_TIMEOUT)
         increment_runtime_counter("hermes_calls")
         increment_runtime_counter("hermes_errors")
-        log({"type": "hermes_error", "error": "FileNotFoundError", "hermes_bin": HERMES_BIN})
+        log({"type": "hermes_error", "error": "FileNotFoundError", "hermes_bin_configured": bool(HERMES_BIN)})
     except subprocess.TimeoutExpired:
         runtime_stat("hermes_call", purpose=purpose, group_id=group_id, use_group_session=use_group_session, duration_ms=runtime_stats.duration_ms(start), ok=False, error="TimeoutExpired", input_chars=input_chars, timeout_s=HERMES_TIMEOUT)
         increment_runtime_counter("hermes_calls")
@@ -2356,7 +2219,7 @@ def run_hermes_cmd(cmd: list[str], *, purpose: str = "unknown", group_id: int | 
         runtime_stat("hermes_call", purpose=purpose, group_id=group_id, use_group_session=use_group_session, duration_ms=runtime_stats.duration_ms(start), ok=False, error=type(exc).__name__, input_chars=input_chars, timeout_s=HERMES_TIMEOUT)
         increment_runtime_counter("hermes_calls")
         increment_runtime_counter("hermes_errors")
-        log({"type": "hermes_error", "error": type(exc).__name__, "message": str(exc)})
+        log({"type": "hermes_error", "error": type(exc).__name__})
     return None
 
 
@@ -2371,11 +2234,18 @@ def bootstrap_group_session(prompt: str, group_id: int | None) -> subprocess.Com
         try:
             r = subprocess.run(rename_cmd, text=True, capture_output=True, timeout=30, cwd=str(BASE_DIR))
             if r.returncode != 0:
-                log({"type": "hermes_session_rename_error", "returncode": r.returncode, "stdout": (r.stdout or "")[-1000:], "stderr": (r.stderr or "")[-1000:], "session_id": session_id, "session_name": session_name})
+                log({
+                    "type": "hermes_session_rename_error",
+                    "returncode": r.returncode,
+                    "stdout_len": len(r.stdout or ""),
+                    "stderr_len": len(r.stderr or ""),
+                    "session_id": session_id,
+                    "session_name": session_name,
+                })
             else:
                 log({"type": "hermes_session_created", "session_id": session_id, "session_name": session_name})
         except Exception as exc:
-            log({"type": "hermes_session_rename_error", "error": type(exc).__name__, "message": str(exc), "session_id": session_id, "session_name": session_name})
+            log({"type": "hermes_session_rename_error", "error": type(exc).__name__, "session_id": session_id, "session_name": session_name})
     return p
 
 
@@ -2420,34 +2290,120 @@ def run_proactive_reply(event: dict[str, Any], reasons: list[str]) -> str:
         return ""
     reply = finalize_reply(raw)
     if _proactive_output_repeats_recent_bot_wording(group_id, reply):
-        log({"type": "proactive_repeated_bot_wording_suppressed", "group_id": group_id, "reply": reply[:120]})
+        log({"type": "proactive_repeated_bot_wording_suppressed", "group_id": group_id, "reply_len": len(reply or "")})
         return ""
     return reply
+
+
+def _model_provider_key(model: str | None, provider: str | None) -> tuple[str, str]:
+    return (str(model or "").strip().lower(), str(provider or "").strip().lower())
+
+
+def hermes_fallback_available(group_id: int | None = None) -> bool:
+    if not HERMES_FALLBACK_ENABLED:
+        return False
+    if not (HERMES_FALLBACK_MODEL or HERMES_FALLBACK_PROVIDER):
+        return False
+    active = _model_provider_key(hermes_model_for_group(group_id), hermes_provider_for_group(group_id))
+    fallback = _model_provider_key(HERMES_FALLBACK_MODEL, HERMES_FALLBACK_PROVIDER)
+    return fallback != active
+
+
+def _hermes_raw_result_from_process(
+    p: subprocess.CompletedProcess[str] | None,
+    *,
+    prompt: str,
+    group_id: int | None,
+    use_group_session: bool,
+    allow_session_bootstrap: bool,
+) -> dict[str, Any]:
+    if p is None:
+        return {"ok": False, "text": "", "reason": "hermes_process_failed"}
+    output = (p.stdout or "") + "\n" + (p.stderr or "")
+    if (
+        allow_session_bootstrap
+        and p.returncode != 0
+        and HERMES_GROUP_SESSIONS_ENABLED
+        and use_group_session
+        and output_indicates_missing_session(output)
+    ):
+        log({
+            "type": "hermes_missing_group_session",
+            "group_id": group_id,
+            "session_name": hermes_session_name_for_group(group_id),
+            "output_len": len(output),
+        })
+        p = bootstrap_group_session(prompt, group_id)
+        if p is None:
+            return {"ok": False, "text": "", "reason": "hermes_session_bootstrap_failed"}
+    if p.returncode != 0:
+        log({
+            "type": "hermes_error",
+            "returncode": p.returncode,
+            "stdout_len": len(p.stdout or ""),
+            "stderr_len": len(p.stderr or ""),
+        })
+        return {"ok": False, "text": "", "reason": "hermes_nonzero", "returncode": p.returncode}
+    text = strip_session_footer(p.stdout or "")
+    return {"ok": True, "text": text, "reason": "" if text else "hermes_empty_output"}
+
+
+def _hermes_result_needs_fallback(result: dict[str, Any]) -> bool:
+    return not result.get("ok") or not str(result.get("text") or "").strip()
+
+
+def run_hermes_fallback_result(prompt: str, group_id: int | None = None, *, purpose: str = "unknown", primary_reason: str = "") -> dict[str, Any] | None:
+    if not hermes_fallback_available(group_id):
+        return None
+    fallback_purpose = f"{purpose}_fallback" if purpose else "fallback"
+    log({"type": "hermes_fallback_attempt", "group_id": group_id, "purpose": purpose, "primary_reason": primary_reason or "unknown"})
+    p = run_hermes_cmd(
+        build_hermes_cmd(
+            prompt,
+            group_id=group_id,
+            use_group_session=False,
+            model=HERMES_FALLBACK_MODEL,
+            provider=HERMES_FALLBACK_PROVIDER,
+        ),
+        purpose=fallback_purpose,
+        group_id=group_id,
+        use_group_session=False,
+        input_chars=len(prompt),
+    )
+    result = _hermes_raw_result_from_process(
+        p,
+        prompt=prompt,
+        group_id=group_id,
+        use_group_session=False,
+        allow_session_bootstrap=False,
+    )
+    log({
+        "type": "hermes_fallback_result",
+        "group_id": group_id,
+        "purpose": purpose,
+        "ok": bool(result.get("ok") and str(result.get("text") or "").strip()),
+        "reason": result.get("reason") or "",
+        "output_len": len(str(result.get("text") or "")),
+    })
+    return result
 
 
 def run_hermes_raw_result(prompt: str, group_id: int | None = None, use_group_session: bool = True, purpose: str = "unknown") -> dict[str, Any]:
     if use_group_session:
         compact_group_hermes_session_if_needed(group_id)
     p = run_hermes_cmd(build_hermes_cmd(prompt, group_id=group_id, use_group_session=use_group_session), purpose=purpose, group_id=group_id, use_group_session=use_group_session, input_chars=len(prompt))
-    if p is None:
-        return {"ok": False, "text": "", "reason": "hermes_process_failed"}
-    output = (p.stdout or "") + "\n" + (p.stderr or "")
-    if p.returncode != 0 and HERMES_GROUP_SESSIONS_ENABLED and use_group_session and output_indicates_missing_session(output):
-        log({"type": "hermes_missing_group_session", "group_id": group_id, "session_name": hermes_session_name_for_group(group_id), "stdout": (p.stdout or "")[-1000:], "stderr": (p.stderr or "")[-1000:]})
-        p = bootstrap_group_session(prompt, group_id)
-        if p is None:
-            return {"ok": False, "text": "", "reason": "hermes_session_bootstrap_failed"}
-    if p.returncode != 0:
-        log({"type": "hermes_error", "returncode": p.returncode, "stdout": (p.stdout or "")[-2000:], "stderr": (p.stderr or "")[-2000:]})
-        return {
-            "ok": False,
-            "text": "",
-            "reason": "hermes_nonzero",
-            "returncode": p.returncode,
-            "stdout": p.stdout or "",
-            "stderr": p.stderr or "",
-        }
-    return {"ok": True, "text": strip_session_footer(p.stdout or ""), "reason": ""}
+    primary = _hermes_raw_result_from_process(
+        p,
+        prompt=prompt,
+        group_id=group_id,
+        use_group_session=use_group_session,
+        allow_session_bootstrap=True,
+    )
+    if _hermes_result_needs_fallback(primary):
+        fallback = run_hermes_fallback_result(prompt, group_id, purpose=purpose, primary_reason=str(primary.get("reason") or "unknown"))
+        if fallback is not None:
+            return fallback
+    return primary
 
 
 def run_hermes_raw(prompt: str, group_id: int | None = None, use_group_session: bool = True, purpose: str = "unknown") -> str:
@@ -2499,7 +2455,7 @@ def direct_failure_notice_for_event(event: dict[str, Any]) -> str:
     user_id = event.get("user_id")
     if user_id not in (None, ""):
         parts.append(f"[CQ:at,qq={user_id}]")
-    parts.append(" 稍后重试一下")
+    parts.append(f" {DIRECT_GENERATION_FAILURE_NOTICE}")
     return "".join(parts).strip()
 
 
@@ -2514,11 +2470,18 @@ async def send_group_msg(group_id: int, message: str) -> dict[str, Any]:
             access_token=ONEBOT_ACCESS_TOKEN,
         )
         status_code = data.get("status_code") if isinstance(data, dict) else None
-        log({"type": "send_group_msg", "status_code": status_code, "response": data})
+        log({
+            "type": "send_group_msg",
+            "status_code": status_code,
+            "ok": send_group_msg_succeeded(data) if isinstance(data, dict) else False,
+            "onebot_status": str(data.get("status") or "")[:40] if isinstance(data, dict) else "",
+            "retcode": data.get("retcode") if isinstance(data, dict) else None,
+            "response_len": len(str(data)) if isinstance(data, dict) else 0,
+        })
         return data
     except Exception as exc:
-        data = {"error": type(exc).__name__, "message": str(exc), "onebot_http_url": ONEBOT_HTTP_URL}
-        log({"type": "send_group_msg_error", **data})
+        data = {"error": type(exc).__name__}
+        log({"type": "send_group_msg_error", "error": type(exc).__name__})
         return data
     finally:
         ok = send_group_msg_succeeded(data)
@@ -2592,7 +2555,7 @@ async def finish_outbound_attempt(group_id: int, message: str, key: str, succeed
 async def send_group_msg_once(group_id: int, message: str, duplicate_window: float = 30.0) -> tuple[dict[str, Any], bool]:
     key, suppressed = await reserve_outbound_attempt(group_id, message, duplicate_window)
     if suppressed:
-        log({"type": "duplicate_outbound_suppressed", "group_id": group_id, "message": (message or "")[:120]})
+        log({"type": "duplicate_outbound_suppressed", "group_id": group_id, "message_len": len(message or "")})
         increment_runtime_counter("duplicate_outbound_suppressed")
         runtime_stat(
             "send_group_msg",
@@ -2654,7 +2617,14 @@ async def send_immediate_reply(group_id: int, reply: str, event: dict[str, Any],
         reply = REPLY_PREFIX + reply
     data, _suppressed = await send_group_msg_rate_limited(group_id, reply)
     if not send_group_msg_succeeded(data):
-        log({"type": f"{log_type}_send_failed", "group_id": group_id, "user_id": event.get("user_id"), "response": data})
+        log({
+            "type": f"{log_type}_send_failed",
+            "group_id": group_id,
+            "user_id": event.get("user_id"),
+            "error": data.get("error") if isinstance(data, dict) else "",
+            "status_code": data.get("status_code") if isinstance(data, dict) else None,
+            "onebot_status": str(data.get("status") or "")[:40] if isinstance(data, dict) else "",
+        })
         return {"ok": False, "replied": False, "trigger": trigger, "error": "send_failed", "response": data}
     if remember_context:
         remember_bot_reply(group_id, reply, event.get("self_id"))
@@ -2707,7 +2677,6 @@ async def process_direct_reply_intent(group_id: int, queued_intent: dict[str, An
     media_context = str(queued_intent.get("media_context") or "（当前消息没有图片识别结果）")
     trigger = queued_intent.get("trigger") or "at"
     pending_remembered = False
-    search_notice_sent = False
     start = runtime_now()
     interaction_id = str(queued_intent.get("_perf_interaction_id") or runtime_interaction_id(event))
     queue_wait_ms = int(queued_intent.get("_perf_queue_wait_ms") or runtime_elapsed_ms(queued_intent.get("_perf_enqueued_at")))
@@ -2734,7 +2703,7 @@ async def process_direct_reply_intent(group_id: int, queued_intent: dict[str, An
         generated = await asyncio.to_thread(generate_direct_reply, prompt, group_id)
         generation_ms = runtime_elapsed_ms(generation_start)
     except Exception as exc:
-        log({"type": "direct_reply_error", "group_id": group_id, "user_id": event.get("user_id"), "error": type(exc).__name__, "message": str(exc)})
+        log({"type": "direct_reply_error", "group_id": group_id, "user_id": event.get("user_id"), "error": type(exc).__name__})
         generated = {
             "ok": False,
             "generation_failed": True,
@@ -2777,7 +2746,15 @@ async def process_direct_reply_intent(group_id: int, queued_intent: dict[str, An
         return result
     if not send_group_msg_succeeded(data):
         drop_last_bot_pending_reply(group_id)
-        log({"type": "direct_reply_send_failed", "group_id": group_id, "user_id": event.get("user_id"), "generation_failed": generation_failed, "response": data})
+        log({
+            "type": "direct_reply_send_failed",
+            "group_id": group_id,
+            "user_id": event.get("user_id"),
+            "generation_failed": generation_failed,
+            "error": data.get("error") if isinstance(data, dict) else "",
+            "status_code": data.get("status_code") if isinstance(data, dict) else None,
+            "onebot_status": str(data.get("status") or "")[:40] if isinstance(data, dict) else "",
+        })
         content_analysis_log(
             "direct_reply_failed",
             group_id,
@@ -2830,7 +2807,6 @@ async def process_direct_reply_intent(group_id: int, queued_intent: dict[str, An
     result = reply_processing.direct_reply_success_result(
         trigger=trigger,
         queue_remaining=reply_queue_size(group_id),
-        search_notice_sent=search_notice_sent,
     )
     content_analysis_log(
         "direct_reply_sent",
@@ -2841,7 +2817,6 @@ async def process_direct_reply_intent(group_id: int, queued_intent: dict[str, An
         generation_failed=False,
         failure_notice_sent=False,
         queue_remaining=reply_queue_size(group_id),
-        search_notice_sent=search_notice_sent,
     )
     record_direct_reply_runtime_result(group_id, event, trigger=trigger, result=result, output_len=len(reply), duration_start=start, perf=perf)
     return result
@@ -2941,7 +2916,6 @@ async def process_proactive_reply_intent(group_id: int, queued_intent: dict[str,
     global _last_reply_at
     event = queued_intent.get("event") or {}
     proactive = queued_intent.get("proactive") or {}
-    search_notice_sent = False
     start = runtime_now()
     interaction_id = str(queued_intent.get("_perf_interaction_id") or runtime_interaction_id(event))
     queue_wait_ms = int(queued_intent.get("_perf_queue_wait_ms") or runtime_elapsed_ms(queued_intent.get("_perf_enqueued_at")))
@@ -3002,7 +2976,13 @@ async def process_proactive_reply_intent(group_id: int, queued_intent: dict[str,
             record_proactive_runtime_result(group_id, event, proactive, result=result, output_len=len(reply), suppressed_duplicate=True, duration_start=start, perf=perf)
             return result
         if not send_group_msg_succeeded(data):
-            log({"type": "proactive_send_failed", "group_id": group_id, "response": data})
+            log({
+                "type": "proactive_send_failed",
+                "group_id": group_id,
+                "error": data.get("error") if isinstance(data, dict) else "",
+                "status_code": data.get("status_code") if isinstance(data, dict) else None,
+                "onebot_status": str(data.get("status") or "")[:40] if isinstance(data, dict) else "",
+            })
             result = reply_processing.proactive_send_failed_result(data)
             content_analysis_log(
                 "proactive_suppressed",
@@ -3017,11 +2997,10 @@ async def process_proactive_reply_intent(group_id: int, queued_intent: dict[str,
             return result
         remember_bot_reply(group_id, reply, event.get("self_id"))
         mark_proactive_replied(group_id)
-        log({"type": "proactive_reply_sent", "group_id": group_id, "score": proactive.get("score"), "reasons": proactive.get("reasons", []), "direct_name_trigger": proactive.get("direct_name_trigger", False), "queue_remaining": reply_queue_size(group_id), "search_notice_sent": search_notice_sent})
+        log({"type": "proactive_reply_sent", "group_id": group_id, "score": proactive.get("score"), "reasons": proactive.get("reasons", []), "direct_name_trigger": proactive.get("direct_name_trigger", False), "queue_remaining": reply_queue_size(group_id)})
         result = reply_processing.proactive_sent_result(
             proactive,
             queue_remaining=reply_queue_size(group_id),
-            search_notice_sent=search_notice_sent,
         )
         content_analysis_log(
             "proactive_reply_sent",
@@ -3032,7 +3011,6 @@ async def process_proactive_reply_intent(group_id: int, queued_intent: dict[str,
             reasons=proactive.get("reasons", []),
             direct_name_trigger=proactive.get("direct_name_trigger", False),
             queue_remaining=reply_queue_size(group_id),
-            search_notice_sent=search_notice_sent,
         )
         record_proactive_runtime_result(group_id, event, proactive, result=result, output_len=len(reply), suppressed_duplicate=False, duration_start=start, perf=perf)
         return result
@@ -3092,7 +3070,16 @@ async def drain_reply_queue(group_id: int) -> None:
     try:
         while True:
             result = await process_one_reply_intent(group_id)
-            log({"type": "reply_worker_processed", "group_id": group_id, "result": result})
+            log({
+                "type": "reply_worker_processed",
+                "group_id": group_id,
+                "ok": bool(result.get("ok")),
+                "ignored": result.get("ignored") or "",
+                "error": result.get("error") or "",
+                "generation_failed": bool(result.get("generation_failed")),
+                "failure_notice_sent": bool(result.get("failure_notice_sent")),
+                "queue_remaining": result.get("queue_remaining"),
+            })
             if result.get("ignored") == "reply_queue_empty":
                 break
             processed_count += 1
@@ -3100,7 +3087,7 @@ async def drain_reply_queue(group_id: int) -> None:
                 error_count += 1
     except Exception as exc:
         error_count += 1
-        log({"type": "reply_worker_error", "group_id": group_id, "error": type(exc).__name__, "message": str(exc)})
+        log({"type": "reply_worker_error", "group_id": group_id, "error": type(exc).__name__})
     finally:
         current = asyncio.current_task()
         if _reply_workers_by_group.get(group_id) is current:
@@ -3202,138 +3189,15 @@ async def prometheus_metrics() -> PlainTextResponse:
     return PlainTextResponse(metrics.generate_latest(), media_type=metrics.CONTENT_TYPE)
 
 
-def build_search_command_prompt(query: str, group_id: int | None = None) -> str:
-    return commands.build_search_command_prompt(
-        query,
-        date_context=current_date_context(),
-        knowledge=search_knowledge_for_prompt(group_id),
-    )
-
-
-def build_search_command_reply(query: str, group_id: int | None = None) -> str:
-    clean = commands.clean_query(query)
-    if not clean:
-        return "用法：/search 你要查的内容"
-    return finalize_reply(run_search_command_search(clean, group_id))
-
-
-def build_deepseek_command_prompt(query: str, search_result: str, group_id: int | None = None) -> str:
-    return commands.build_deepseek_command_prompt(
-        query,
-        search_result,
-        date_context=current_date_context(),
-        knowledge=search_knowledge_for_prompt(group_id),
-        max_reply_chars=MAX_REPLY_CHARS,
-    )
-
-
-def _whole_clause_fit(text: str, limit: int) -> str:
-    """最后安全网：按完整短句保留，避免从长回复中硬截半句话。"""
-    return text_utils.whole_clause_fit(
-        text,
-        limit,
-        punctuation_style_enabled=PUNCTUATION_STYLE_ENABLED,
-    )
-
-
-def compress_deepseek_reply(query: str, draft: str, search_result: str, group_id: int | None = None) -> str:
-    start = runtime_now()
-    budget = max(120, MAX_REPLY_CHARS - 20)
-    prompt = commands.build_compress_deepseek_prompt(
-        query=query,
-        draft=draft,
-        search_result=search_result,
-        budget=budget,
-    )
-    cmd = build_hermes_cmd(prompt, group_id=group_id, use_group_session=False, model=DEEPSEEK_COMMAND_MODEL, provider=DEEPSEEK_COMMAND_PROVIDER)
-    try:
-        p = subprocess.run(cmd, text=True, capture_output=True, timeout=HERMES_TIMEOUT, cwd=str(BASE_DIR))
-    except Exception as exc:
-        emit_perf_stat("deepseek_command_phase", phase="compress", group_id=group_id, duration_ms=runtime_elapsed_ms(start), ok=False, error=type(exc).__name__, draft_len=len(draft or ""), search_result_len=len(search_result or ""))
-        log({"type": "deepseek_command_compress_error", "error": type(exc).__name__, "message": str(exc)})
-        return ""
-    emit_perf_stat(
-        "deepseek_command_phase",
-        phase="compress",
-        group_id=group_id,
-        duration_ms=runtime_elapsed_ms(start),
-        ok=p.returncode == 0,
-        returncode=p.returncode,
-        draft_len=len(draft or ""),
-        search_result_len=len(search_result or ""),
-        output_len=len(p.stdout or ""),
-    )
-    if p.returncode != 0:
-        log({"type": "deepseek_command_compress_error", "returncode": p.returncode, "stdout": (p.stdout or "")[-800:], "stderr": (p.stderr or "")[-800:]})
-        return ""
-    return prepare_reply_text(strip_session_footer(p.stdout or ""))
-
-
-def finalize_deepseek_command_reply(raw: str, query: str, search_result: str, group_id: int | None = None) -> str:
-    return commands.finalize_deepseek_command_reply(
-        raw,
-        query=query,
-        search_result=search_result,
-        max_reply_chars=MAX_REPLY_CHARS,
-        strip_session_footer_fn=strip_session_footer,
-        prepare_reply_text_fn=prepare_reply_text,
-        empty_reply_fn=lambda raw_text, query_text: pick_template("empty_reply", raw_text or query_text),
-        compress_fn=compress_deepseek_reply,
-        whole_clause_fit_fn=_whole_clause_fit,
-        group_id=group_id,
-    )
-
-
-def build_deepseek_command_reply(query: str, group_id: int | None = None) -> str:
-    clean = commands.clean_query(query)
-    if not clean:
-        return "用法：/deepseek 你要深度搜索/分析的问题"
-    search_start = runtime_now()
-    search_result = run_web_search(clean)
-    emit_perf_stat("deepseek_command_phase", phase="search", group_id=group_id, duration_ms=runtime_elapsed_ms(search_start), ok=bool(search_result), query_len=len(clean), search_result_len=len(search_result or ""))
-    prompt = build_deepseek_command_prompt(clean, search_result, group_id)
-    cmd = build_hermes_cmd(prompt, group_id=group_id, use_group_session=False, model=DEEPSEEK_COMMAND_MODEL, provider=DEEPSEEK_COMMAND_PROVIDER)
-    draft_start = runtime_now()
-    try:
-        p = subprocess.run(cmd, text=True, capture_output=True, timeout=HERMES_TIMEOUT, cwd=str(BASE_DIR))
-    except Exception as exc:
-        emit_perf_stat("deepseek_command_phase", phase="draft", group_id=group_id, duration_ms=runtime_elapsed_ms(draft_start), ok=False, error=type(exc).__name__, query_len=len(clean), search_result_len=len(search_result or ""))
-        log({"type": "deepseek_command_error", "error": type(exc).__name__, "message": str(exc)})
-        return "深度思考这次跑挂了 稍后再试"
-    emit_perf_stat(
-        "deepseek_command_phase",
-        phase="draft",
-        group_id=group_id,
-        duration_ms=runtime_elapsed_ms(draft_start),
-        ok=p.returncode == 0,
-        returncode=p.returncode,
-        query_len=len(clean),
-        search_result_len=len(search_result or ""),
-        output_len=len(p.stdout or ""),
-        model_configured=bool(DEEPSEEK_COMMAND_MODEL),
-        provider_configured=bool(DEEPSEEK_COMMAND_PROVIDER),
-    )
-    if p.returncode != 0:
-        log({"type": "deepseek_command_error", "returncode": p.returncode, "stdout": (p.stdout or "")[-800:], "stderr": (p.stderr or "")[-800:]})
-        return "深度思考这次没跑通 稍后再试"
-    return finalize_deepseek_command_reply(p.stdout or "", clean, search_result, group_id)
-
-
 def select_command_action(event: dict[str, Any], user_text: str) -> dict[str, Any] | None:
     return handlers.command_action_for_text(
         user_text,
         event=event,
         group_id=group_id_from_event(event),
         is_context_command_fn=is_context_command,
-        is_search_command_fn=is_search_command,
-        search_command_query_fn=search_command_query,
-        is_deepseek_command_fn=is_deepseek_command,
-        deepseek_command_query_fn=deepseek_command_query,
         is_jrrp_command_fn=is_jrrp_command,
         sender_name_fn=_sender_name,
         build_context_reply_fn=build_context_command_reply,
-        build_search_reply_fn=build_search_command_reply,
-        build_deepseek_reply_fn=build_deepseek_command_reply,
         build_jrrp_reply_fn=build_jrrp_reply,
     )
 
@@ -3341,13 +3205,7 @@ def select_command_action(event: dict[str, Any], user_text: str) -> dict[str, An
 async def execute_command_action(group_id: int | None, event: dict[str, Any], command_action: dict[str, Any]) -> dict[str, Any]:
     start = runtime_now()
     interaction_id = str(command_action.get("interaction_id") or runtime_interaction_id(event))
-    if command_action["kind"] == "threaded_immediate":
-        if command_action.get("command") == "search" or command_action.get("trigger") == "search_command":
-            reply = await asyncio.to_thread(build_search_command_reply, command_action["query"], group_id)
-        else:
-            reply = await asyncio.to_thread(build_deepseek_command_reply, command_action["query"], group_id)
-    else:
-        reply = command_action["reply"]
+    reply = command_action["reply"]
     result = await send_immediate_reply(
         group_id,
         reply,
@@ -3370,7 +3228,7 @@ async def execute_command_action(group_id: int | None, event: dict[str, Any], co
         user_hash=runtime_user_hash(event.get("user_id")),
         command=command,
         trigger=command_action.get("trigger"),
-        threaded=command_action.get("kind") == "threaded_immediate",
+        threaded=False,
         ok=bool(result.get("ok")),
         output_len=len(reply or ""),
         duration_ms=runtime_stats.duration_ms(start),

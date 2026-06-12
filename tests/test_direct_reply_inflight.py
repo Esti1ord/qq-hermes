@@ -189,6 +189,32 @@ def test_process_direct_reply_intent_can_run_without_queue_wrapper(monkeypatch):
     assert sent == [(975805598, "[CQ:reply,id=501]直接回答")]
 
 
+def test_direct_send_failure_log_does_not_include_response_or_reply_text(monkeypatch):
+    bridge = load_bridge_module()
+    configure_bridge(bridge)
+    logs = []
+
+    monkeypatch.setattr(bridge, "log", lambda event: logs.append(event))
+    monkeypatch.setattr(bridge, "run_hermes_raw", lambda prompt, group_id=None, use_group_session=True, purpose="unknown": "PRIVATE MODEL REPLY")
+
+    async def fake_send_rate_limited(group_id, message, once=False):
+        return {"status_code": 500, "text": "SECRET PROVIDER RESPONSE BODY", "error": "send_failed"}, False
+
+    monkeypatch.setattr(bridge, "send_group_msg_rate_limited", fake_send_rate_limited)
+    event = make_at_event(text="Esti send fail", user_id=3, message_id=502)
+
+    result = asyncio.run(bridge.process_direct_reply_intent(975805598, {"kind": "direct", "event": event, "user_text": "Esti send fail", "trigger": "at"}))
+
+    assert result["error"] == "send_failed"
+    rendered = repr(logs)
+    assert "PRIVATE MODEL REPLY" not in rendered
+    assert "SECRET PROVIDER RESPONSE BODY" not in rendered
+    failure_log = next(item for item in logs if item.get("type") == "direct_reply_send_failed")
+    assert failure_log["error"] == "send_failed"
+    assert failure_log["status_code"] == 500
+    assert "response" not in failure_log
+
+
 def test_direct_reply_empty_hermes_output_sends_visible_failure_notice(monkeypatch):
     bridge = load_bridge_module()
     configure_bridge(bridge)
@@ -209,7 +235,7 @@ def test_direct_reply_empty_hermes_output_sends_visible_failure_notice(monkeypat
     assert result["generation_failed"] is True
     assert result["failure_notice_sent"] is True
     assert result["error"] == "direct_hermes_empty"
-    assert sent == [(975805598, "[CQ:reply,id=301][CQ:at,qq=1] 稍后重试一下")]
+    assert sent == [(975805598, "[CQ:reply,id=301][CQ:at,qq=1] 没有油烧了谁给我加加油")]
     assert "机器人，正在生成回复" not in bridge.format_recent_context(975805598)
 
 
@@ -319,7 +345,7 @@ def test_failed_direct_reply_generation_drains_next_queued_reply(monkeypatch):
     assert calls[1]["purpose"] == "direct_reply_retry"
     assert calls[1]["use_group_session"] is False
     assert calls[2]["purpose"] == "direct_reply"
-    assert sent == [(975805598, "[CQ:reply,id=811][CQ:at,qq=1] 稍后重试一下"), (975805598, "[CQ:reply,id=812]恢复后的回答")]
+    assert sent == [(975805598, "[CQ:reply,id=811][CQ:at,qq=1] 没有油烧了谁给我加加油"), (975805598, "[CQ:reply,id=812]恢复后的回答")]
 
 
 def test_repeated_direct_generation_failures_are_not_duplicate_suppressed(monkeypatch):
@@ -345,8 +371,8 @@ def test_repeated_direct_generation_failures_are_not_duplicate_suppressed(monkey
     asyncio.run(run_two())
 
     assert sent == [
-        (975805598, "[CQ:reply,id=901][CQ:at,qq=1] 稍后重试一下"),
-        (975805598, "[CQ:reply,id=902][CQ:at,qq=2] 稍后重试一下"),
+        (975805598, "[CQ:reply,id=901][CQ:at,qq=1] 没有油烧了谁给我加加油"),
+        (975805598, "[CQ:reply,id=902][CQ:at,qq=2] 没有油烧了谁给我加加油"),
     ]
 
 
@@ -405,6 +431,29 @@ def test_send_group_msg_rate_limited_serializes_concurrent_sends(monkeypatch):
     assert results == [({"status": "ok", "retcode": 0}, False), ({"status": "ok", "retcode": 0}, False)]
     assert sleeps == [1.0, 2.0]
     assert sent == [(1, "one", 102.0), (2, "two", 104.0)]
+
+
+def test_send_group_msg_exception_log_does_not_include_url_token_or_message(monkeypatch):
+    bridge = load_bridge_module()
+    configure_bridge(bridge)
+    bridge.ONEBOT_HTTP_URL = "https://secret-onebot.example.test/api"
+    bridge.ONEBOT_ACCESS_TOKEN = "SECRET_ACCESS_TOKEN"
+    logs = []
+
+    async def failing_send_group_msg(*args, **kwargs):
+        raise RuntimeError("SECRET_ACCESS_TOKEN https://secret-onebot.example.test/api private message")
+
+    monkeypatch.setattr(bridge, "log", lambda event: logs.append(event))
+    monkeypatch.setattr(bridge.outbound, "send_group_msg", failing_send_group_msg)
+
+    data = asyncio.run(bridge.send_group_msg(975805598, "PRIVATE OUTBOUND MESSAGE"))
+
+    assert data == {"error": "RuntimeError"}
+    rendered = repr(logs)
+    assert "SECRET_ACCESS_TOKEN" not in rendered
+    assert "secret-onebot.example.test" not in rendered
+    assert "PRIVATE OUTBOUND MESSAGE" not in rendered
+    assert "private message" not in rendered
 
 
 

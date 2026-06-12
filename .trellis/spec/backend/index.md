@@ -32,7 +32,7 @@ Before changing backend runtime, configuration, logging, or metrics:
 |-------|-------------|--------|
 | [Directory Structure](./directory-structure.md) | Module organization, runtime split, `bridge:app` compatibility contract | Active |
 | [Database Guidelines](./database-guidelines.md) | ORM patterns, queries, migrations | Not applicable yet |
-| [Error Handling](./error-handling.md) | Error types, handling strategies | To fill |
+| [Error Handling](./error-handling.md) | Error types, handling strategies, model provider fallback contracts | Active |
 | [Quality Guidelines](./quality-guidelines.md) | Code standards, forbidden patterns | To fill |
 | [Logging Guidelines](./logging-guidelines.md) | JSONL runtime stats and Prometheus `/metrics` contracts | Active |
 

@@ -33,21 +33,6 @@ REPLY_TEMPLATES = {
         "这下没处理好 先缓一下",
         "我这边断了一下 等会再来",
     ],
-    "web_search_failed": [
-        "（联网搜索刚才失败了；回复时说明不确定，别编最新信息。）",
-        "（这次搜索没跑通；回复时按不确定处理，不要硬编。）",
-        "（实时检索失败；只能说明没查准，不要补旧消息。）",
-    ],
-    "web_search_no_match": [
-        "没搜到特别可靠的结果 先别当准信",
-        "这次没搜准 可能得换个关键词",
-        "没查到够稳的来源 先按不确定处理",
-    ],
-    "web_search_empty": [
-        "（联网搜索没有明确结果；回复时说明不确定。）",
-        "（搜索摘录不够明确；回复时别下定论。）",
-        "（没拿到清楚结果；回复时说还没查准。）",
-    ],
 }
 
 
@@ -71,6 +56,9 @@ class Config:
     hermes_bin: str
     hermes_model: str
     hermes_provider: str
+    hermes_fallback_enabled: bool
+    hermes_fallback_model: str
+    hermes_fallback_provider: str
     hermes_model_by_group: dict[int, str]
     hermes_provider_by_group: dict[int, str]
     hermes_group_sessions_enabled: bool
@@ -120,6 +108,11 @@ class Config:
     ocr_model: str
     ocr_provider_base_url: str
     ocr_api_key_env: str
+    ocr_fallback_enabled: bool
+    ocr_fallback_provider: str
+    ocr_fallback_model: str
+    ocr_fallback_provider_base_url: str
+    ocr_fallback_api_key_env: str
     ocr_image_prompt: str
     ocr_context_group_ids: set[int]
     ocr_max_concurrent_tasks: int
@@ -157,7 +150,6 @@ class Config:
     perf_obs_slow_hermes_ms: int
     perf_obs_slow_send_ms: int
     perf_obs_slow_ocr_ms: int
-    perf_obs_slow_search_ms: int
     perf_obs_interaction_ttl_seconds: float
     perf_obs_max_interactions: int
     jrrp_state_file: Path
@@ -190,18 +182,6 @@ class Config:
     proactive_night_end: str
     proactive_night_score_multiplier: float
     proactive_sensitive_keywords: list[str]
-    web_search_enabled: bool
-    web_search_timeout: int
-    web_search_max_chars: int
-    web_search_backend: str
-    web_search_model: str
-    web_search_provider: str
-    web_search_http_timeout: float
-    web_search_max_successful_fetches: int
-    web_search_notice_enabled: bool
-    web_search_notice_text: str
-    deepseek_command_model: str
-    deepseek_command_provider: str
     style_hints: list[str] = field(default_factory=lambda: list(STYLE_HINTS))
     reply_templates: dict[str, list[str]] = field(default_factory=lambda: {key: list(values) for key, values in REPLY_TEMPLATES.items()})
 
@@ -250,6 +230,17 @@ def _bool_env(name: str, default: str) -> bool:
     return os.getenv(name, default).lower() in {"1", "true", "yes"}
 
 
+def _env_first(*names: str, default: str = "") -> str:
+    return config_utils.env_first(*names, default=default)
+
+
+def _api_key_env_name(*, explicit_names: tuple[str, ...], raw_names: tuple[str, ...]) -> str:
+    raw_name = config_utils.env_name_if_set(*raw_names)
+    if raw_name:
+        return raw_name
+    return _env_first(*explicit_names)
+
+
 def load_config(base_dir: Path | None = None) -> Config:
     resolved_base_dir = Path(base_dir).resolve() if base_dir is not None else Path(__file__).resolve().parent.parent
     log_dir = resolved_base_dir / "logs"
@@ -271,8 +262,11 @@ def load_config(base_dir: Path | None = None) -> Config:
     onebot_access_token = os.getenv("ONEBOT_ACCESS_TOKEN", "").strip()
     bridge_inbound_token = os.getenv("BRIDGE_INBOUND_TOKEN", "").strip()
     hermes_bin = os.getenv("HERMES_BIN", "/home/roxy/.local/bin/hermes")
-    hermes_model = os.getenv("HERMES_MODEL", "").strip()
-    hermes_provider = os.getenv("HERMES_PROVIDER", "").strip()
+    hermes_model = _env_first("PRIMARY_CHAT_MODEL", "HERMES_MODEL")
+    hermes_provider = _env_first("PRIMARY_CHAT_MODEL_PROVIDER", "HERMES_PROVIDER")
+    hermes_fallback_enabled = config_utils.parse_bool(os.getenv("HERMES_FALLBACK_ENABLED", "true"))
+    hermes_fallback_model = _env_first("VICE_CHAT_MODEL", "HERMES_FALLBACK_MODEL", default="deepseekv4flash")
+    hermes_fallback_provider = _env_first("VICE_CHAT_MODEL_PROVIDER", "HERMES_FALLBACK_PROVIDER", default="官方")
     hermes_model_by_group = config_utils.parse_group_str_map(os.getenv("HERMES_MODEL_BY_GROUP", ""))
     hermes_provider_by_group = config_utils.parse_group_str_map(os.getenv("HERMES_PROVIDER_BY_GROUP", ""))
     hermes_group_sessions_enabled = _bool_env("HERMES_GROUP_SESSIONS_ENABLED", "true")
@@ -306,7 +300,7 @@ def load_config(base_dir: Path | None = None) -> Config:
     context_cache_file = Path(os.getenv("CONTEXT_CACHE_FILE", str(resolved_base_dir / "logs" / "recent_context.jsonl")))
     ocr_enabled = config_utils.parse_bool(os.getenv("OCR_ENABLED", "false"))
     ocr_trigger_mode = os.getenv("OCR_TRIGGER_MODE", "direct_only").strip() or "direct_only"
-    ocr_provider = os.getenv("OCR_PROVIDER", "hermes").strip() or "hermes"
+    ocr_provider = _env_first("PRIMARY_OCR_MODEL_PROVIDER", "OCR_PROVIDER", default="hermes")
     ocr_external_provider_allowed = config_utils.parse_bool(os.getenv("OCR_EXTERNAL_PROVIDER_ALLOWED", "false"))
     ocr_max_images_per_message = int(os.getenv("OCR_MAX_IMAGES_PER_MESSAGE", "2"))
     ocr_max_bytes_per_image = int(os.getenv("OCR_MAX_BYTES_PER_IMAGE", "6291456"))
@@ -319,9 +313,20 @@ def load_config(base_dir: Path | None = None) -> Config:
     ocr_persist_text_in_context = config_utils.parse_bool(os.getenv("OCR_PERSIST_TEXT_IN_CONTEXT", "false"))
     ocr_log_text = config_utils.parse_bool(os.getenv("OCR_LOG_TEXT", "false"))
     ocr_log_image_urls = config_utils.parse_bool(os.getenv("OCR_LOG_IMAGE_URLS", "false"))
-    ocr_model = os.getenv("OCR_MODEL", "").strip()
-    ocr_provider_base_url = os.getenv("OCR_PROVIDER_BASE_URL", "").strip()
-    ocr_api_key_env = os.getenv("OCR_API_KEY_ENV", "").strip()
+    ocr_model = _env_first("PRIMARY_OCR_MODEL", "OCR_MODEL")
+    ocr_provider_base_url = _env_first("PRIMARY_OCR_MODEL_URL", "PRIMARY_OCR_MODEL_BASE_URL", "OCR_PROVIDER_BASE_URL")
+    ocr_api_key_env = _api_key_env_name(
+        explicit_names=("PRIMARY_OCR_MODEL_API_KEY_ENV", "OCR_API_KEY_ENV"),
+        raw_names=("PRIMARY_OCR_MODEL_API_KEY", "PRIMARY_OCR_MODEL_API", "OCR_API_KEY"),
+    )
+    ocr_fallback_enabled = config_utils.parse_bool(os.getenv("OCR_FALLBACK_ENABLED", "true"))
+    ocr_fallback_provider = _env_first("VICE_OCR_MODEL_PROVIDER", "OCR_FALLBACK_PROVIDER", default="model")
+    ocr_fallback_model = _env_first("VICE_OCR_MODEL", "OCR_FALLBACK_MODEL", default="gpt-5.4")
+    ocr_fallback_provider_base_url = _env_first("VICE_OCR_MODEL_URL", "VICE_OCR_MODEL_BASE_URL", "OCR_FALLBACK_PROVIDER_BASE_URL")
+    ocr_fallback_api_key_env = _api_key_env_name(
+        explicit_names=("VICE_OCR_MODEL_API_KEY_ENV", "OCR_FALLBACK_API_KEY_ENV"),
+        raw_names=("VICE_OCR_MODEL_API_KEY", "VICE_OCR_MODEL_API", "OCR_FALLBACK_API_KEY"),
+    )
     ocr_image_prompt = os.getenv("OCR_IMAGE_PROMPT", vision.DEFAULT_IMAGE_PROMPT).strip() or vision.DEFAULT_IMAGE_PROMPT
     ocr_context_group_ids = content_analysis_log.parse_group_ids(os.getenv("OCR_CONTEXT_GROUP_IDS", ""))
     ocr_max_concurrent_tasks = max(1, int(os.getenv("OCR_MAX_CONCURRENT_TASKS", "2")))
@@ -371,7 +376,6 @@ def load_config(base_dir: Path | None = None) -> Config:
     perf_obs_slow_hermes_ms = int(os.getenv("PERF_OBS_SLOW_HERMES_MS", "10000"))
     perf_obs_slow_send_ms = int(os.getenv("PERF_OBS_SLOW_SEND_MS", "3000"))
     perf_obs_slow_ocr_ms = int(os.getenv("PERF_OBS_SLOW_OCR_MS", "8000"))
-    perf_obs_slow_search_ms = int(os.getenv("PERF_OBS_SLOW_SEARCH_MS", "10000"))
     perf_obs_interaction_ttl_seconds = float(os.getenv("PERF_OBS_INTERACTION_TTL_SECONDS", "3600"))
     perf_obs_max_interactions = int(os.getenv("PERF_OBS_MAX_INTERACTIONS", "2000"))
     jrrp_state_file = Path(os.getenv("JRRP_STATE_FILE", str(log_dir / "jrrp_state.json")))
@@ -404,18 +408,6 @@ def load_config(base_dir: Path | None = None) -> Config:
     proactive_night_end = os.getenv("PROACTIVE_NIGHT_END", "08:30")
     proactive_night_score_multiplier = float(os.getenv("PROACTIVE_NIGHT_SCORE_MULTIPLIER", "0.2"))
     proactive_sensitive_keywords = env_list("PROACTIVE_SENSITIVE_KEYWORDS", "密码,验证码,账号,诈骗,开盒,身份证,裸照")
-    web_search_enabled = _bool_env("WEB_SEARCH_ENABLED", "true")
-    web_search_timeout = int(os.getenv("WEB_SEARCH_TIMEOUT", "45"))
-    web_search_max_chars = int(os.getenv("WEB_SEARCH_MAX_CHARS", "1200"))
-    web_search_backend = os.getenv("WEB_SEARCH_BACKEND", "curl").strip().lower()
-    web_search_model = os.getenv("WEB_SEARCH_MODEL", hermes_model).strip() or hermes_model
-    web_search_provider = os.getenv("WEB_SEARCH_PROVIDER", hermes_provider).strip()
-    web_search_http_timeout = float(os.getenv("WEB_SEARCH_HTTP_TIMEOUT", "8"))
-    web_search_max_successful_fetches = int(os.getenv("WEB_SEARCH_MAX_SUCCESSFUL_FETCHES", "3"))
-    web_search_notice_enabled = _bool_env("WEB_SEARCH_NOTICE_ENABLED", "true")
-    web_search_notice_text = os.getenv("WEB_SEARCH_NOTICE_TEXT", "我先联网查一下").strip() or "我先联网查一下"
-    deepseek_command_model = os.getenv("DEEPSEEK_COMMAND_MODEL", hermes_model or "gpt-5.5").strip() or "gpt-5.5"
-    deepseek_command_provider = os.getenv("DEEPSEEK_COMMAND_PROVIDER", hermes_provider).strip()
 
     return Config(
         base_dir=resolved_base_dir,
@@ -436,6 +428,9 @@ def load_config(base_dir: Path | None = None) -> Config:
         hermes_bin=hermes_bin,
         hermes_model=hermes_model,
         hermes_provider=hermes_provider,
+        hermes_fallback_enabled=hermes_fallback_enabled,
+        hermes_fallback_model=hermes_fallback_model,
+        hermes_fallback_provider=hermes_fallback_provider,
         hermes_model_by_group=hermes_model_by_group,
         hermes_provider_by_group=hermes_provider_by_group,
         hermes_group_sessions_enabled=hermes_group_sessions_enabled,
@@ -485,6 +480,11 @@ def load_config(base_dir: Path | None = None) -> Config:
         ocr_model=ocr_model,
         ocr_provider_base_url=ocr_provider_base_url,
         ocr_api_key_env=ocr_api_key_env,
+        ocr_fallback_enabled=ocr_fallback_enabled,
+        ocr_fallback_provider=ocr_fallback_provider,
+        ocr_fallback_model=ocr_fallback_model,
+        ocr_fallback_provider_base_url=ocr_fallback_provider_base_url,
+        ocr_fallback_api_key_env=ocr_fallback_api_key_env,
         ocr_image_prompt=ocr_image_prompt,
         ocr_context_group_ids=ocr_context_group_ids,
         ocr_max_concurrent_tasks=ocr_max_concurrent_tasks,
@@ -522,7 +522,6 @@ def load_config(base_dir: Path | None = None) -> Config:
         perf_obs_slow_hermes_ms=perf_obs_slow_hermes_ms,
         perf_obs_slow_send_ms=perf_obs_slow_send_ms,
         perf_obs_slow_ocr_ms=perf_obs_slow_ocr_ms,
-        perf_obs_slow_search_ms=perf_obs_slow_search_ms,
         perf_obs_interaction_ttl_seconds=perf_obs_interaction_ttl_seconds,
         perf_obs_max_interactions=perf_obs_max_interactions,
         jrrp_state_file=jrrp_state_file,
@@ -555,18 +554,6 @@ def load_config(base_dir: Path | None = None) -> Config:
         proactive_night_end=proactive_night_end,
         proactive_night_score_multiplier=proactive_night_score_multiplier,
         proactive_sensitive_keywords=proactive_sensitive_keywords,
-        web_search_enabled=web_search_enabled,
-        web_search_timeout=web_search_timeout,
-        web_search_max_chars=web_search_max_chars,
-        web_search_backend=web_search_backend,
-        web_search_model=web_search_model,
-        web_search_provider=web_search_provider,
-        web_search_http_timeout=web_search_http_timeout,
-        web_search_max_successful_fetches=web_search_max_successful_fetches,
-        web_search_notice_enabled=web_search_notice_enabled,
-        web_search_notice_text=web_search_notice_text,
-        deepseek_command_model=deepseek_command_model,
-        deepseek_command_provider=deepseek_command_provider,
         style_hints=list(STYLE_HINTS),
         reply_templates=_copy_reply_templates(),
     )
