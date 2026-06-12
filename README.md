@@ -1,8 +1,8 @@
 # QQ Hermes Bridge
 
-QQ Hermes Bridge 是一个本地运行的 QQ 群聊桥接服务。它通过 NapCat 暴露的 OneBot v11 接口接收群消息，把需要处理的内容交给 Hermes CLI，再把生成的回复发回 QQ 群。
+QQ Hermes Bridge 是一个QQ聊天桥接服务。通过NapCat暴露的OneBot v11接口接收消息，把需要处理的内容交给Hermes，再把生成的回复发回QQ。
 
-这个项目不是通用 QQ 机器人框架，更接近一个为固定群聊场景维护的个人机器人运行方案。默认目标是让 Esti 像群友一样参与聊天：能接住上下文，被明确点名时稳定回复，平时尽量少打扰，也避免把内部提示词、工具报错和运行细节漏到群里。项目默认运行在使用者自己的 Linux 主机上，通过本人授权的 QQ/NapCat 登录态服务明确配置过的群。
+注意，本项目不是通用 QQ 机器人框架，而是一个为固定群聊场景维护的个人机器人运行方案。默认目标是让 Esti(机器人默认名字)像群友一样参与聊天：能分析思考上下文，被明确提到时稳定回复，群聊热度够高时可以主动发言。已经实现避免把内部提示词、工具报错和运行细节泄漏。项目默认作为.service服务与docker-napcat一起运行，之后为授权的 QQ/NapCat 配置好的群聊服务。
 
 ## 快速理解
 
@@ -13,7 +13,7 @@ QQ 群消息
   -> NapCat Docker 收到事件
   -> OneBot HTTP client POST 到 bridge 的 /onebot
   -> runtime.py 判断命令、点名、回复、主动发言等路由
-  -> 必要时读取群资料、最近上下文、图片 OCR、搜索结果
+  -> 必要时读取群资料、最近上下文、图片识别结果
   -> 调用 hermes chat -q 生成回复
   -> OneBot HTTP API send_group_msg 发回 QQ 群
 ```
@@ -25,7 +25,7 @@ QQ 群消息
 | 项目目录 | `/home/roxy/qq-hermes` |
 | Bridge 服务 | `qq-hermes-bridge.service` |
 | Bridge health | `http://127.0.0.1:8765/health` |
-| OneBot webhook | `http://10.250.0.1:8765/onebot` |
+| OneBot webhook | `http://<bridge-host>:8765/onebot` |
 | NapCat HTTP API | `http://127.0.0.1:3000` |
 | NapCat WebUI | `http://127.0.0.1:6099/webui` |
 | NapCat 容器 | `napcat` |
@@ -65,7 +65,7 @@ qq-hermes/
 │   ├── metrics.py                 # dependency-free Prometheus 文本指标
 │   ├── onebot.py                  # OneBot 消息段、@、reply 解析
 │   ├── handlers.py                # 路由决策：命令、direct、proactive
-│   ├── commands.py                # /context、/search、/deepseek、jrrp 等
+│   ├── commands.py                # /context、jrrp 等
 │   ├── prompt_service.py          # Prompt 构建服务（PromptSection/PromptRequest）
 │   ├── reply_queue.py             # 每群回复队列
 │   ├── context_store.py           # 群上下文缓存和摘要
@@ -74,7 +74,6 @@ qq-hermes/
 │   ├── media.py                   # 图片/媒体引用解析
 │   ├── media_fetch.py             # 受限图片下载
 │   ├── vision.py                  # OCR/图片理解 provider
-│   ├── search.py                  # 搜索命令辅助
 │   ├── runtime_stats.py           # 内容安全运行统计
 │   ├── self_learning.py           # 群内用语/风格自学习
 │   ├── outbound.py                # OneBot 发消息、reply、去重
@@ -275,7 +274,7 @@ http://127.0.0.1:6099/webui
 
 ```text
 HTTP API server: 0.0.0.0:3000, messagePostFormat=array
-HTTP client: http://10.250.0.1:8765/onebot, reportSelfMessage=true, messagePostFormat=array
+HTTP client: http://<bridge-host>:8765/onebot, reportSelfMessage=true, messagePostFormat=array
 ```
 
 ## Hermes 调用方式
@@ -307,8 +306,6 @@ HERMES_GROUP_SESSIONS_ENABLED=true
 HERMES_GROUP_SESSION_PREFIX=qq-group
 ```
 
-`PRIMARY_CHAT_MODEL` / `PRIMARY_CHAT_MODEL_PROVIDER` 是主文本聊天的 canonical keys；`VICE_CHAT_MODEL` / `VICE_CHAT_MODEL_PROVIDER` 是备用文本聊天的 canonical keys。旧键 `HERMES_MODEL` / `HERMES_PROVIDER` / `HERMES_FALLBACK_MODEL` / `HERMES_FALLBACK_PROVIDER` 仍兼容。provider 值必须是 Hermes 已识别的 provider identifier，例如 `deepseek`、`openai-gpt`。
-
 普通群聊 session 名称：
 
 ```text
@@ -318,20 +315,11 @@ qq-group-<group_id>
 可以按群覆盖模型：
 
 ```dotenv
-HERMES_PROVIDER_BY_GROUP=781423661=deepseek,975805598=openai-gpt
-HERMES_MODEL_BY_GROUP=781423661=deepseek-v4-flash,975805598=gpt-5.5
+HERMES_PROVIDER_BY_GROUP=<group_id_a>=deepseek,<group_id_b>=openai-gpt
+HERMES_MODEL_BY_GROUP=<group_id_a>=deepseek-v4-flash,<group_id_b>=gpt-5.5
 ```
 
-当主文本模型 provider 停服、模型不可用、Hermes 调用非 0 退出或返回空输出时，Bridge 会尝试一次 fallback 文本模型。推荐使用 `VICE_CHAT_MODEL_PROVIDER=deepseek`、`VICE_CHAT_MODEL=deepseekv4flash` 这类 Hermes 已识别的 provider identifier；旧的 `HERMES_FALLBACK_PROVIDER` / `HERMES_FALLBACK_MODEL` 仍兼容但不再作为推荐示例。fallback 调用不使用群聊持久 session，并且如果 fallback 与当前生效的主模型/provider 相同会自动跳过，避免重复请求同一个下游。
-
-`/search` 和 `/deepseek` 使用独立配置，避免污染普通群聊 session：
-
-```dotenv
-WEB_SEARCH_PROVIDER=deepseek
-WEB_SEARCH_MODEL=deepseek-v4-flash
-DEEPSEEK_COMMAND_PROVIDER=deepseek
-DEEPSEEK_COMMAND_MODEL=deepseek-v4-flash
-```
+当主文本模型 provider 停服、模型不可用、Hermes 调用非 0 退出或返回空输出时，Bridge 默认会尝试一次 fallback 文本模型。推荐使用 `VICE_CHAT_MODEL_PROVIDER=deepseek`、`VICE_CHAT_MODEL=deepseekv4flash` 这类 Hermes 已识别的 provider identifier；旧的 `HERMES_FALLBACK_PROVIDER` / `HERMES_FALLBACK_MODEL` 仍兼容但不再作为推荐示例。fallback 调用不使用群聊持久 session，并且如果 fallback 与当前生效的主模型/provider 相同会自动跳过，避免重复请求同一个下游。
 
 ## Prompt 构建与上下文管理
 
@@ -499,7 +487,7 @@ groups/<group_id>/
 
 - `persona.md` → `persona` section（`priority="medium"`）
 - `people.md` → `sender_profile`、`mentioned_profiles`、`related_profiles` sections（`priority="medium"` 或 `"low"`）
-- `knowledge.md` → 不自动注入，由 `/search` 等命令按需使用
+- `knowledge.md` → 稳定知识和可信来源记录；普通 direct/proactive prompt 默认不自动注入，避免把长期资料误当实时搜索结果
 - `self_learning.json` → `self_learning` section（`priority="low"`）
 
 运行时上下文：
@@ -540,7 +528,7 @@ scripts/sync_people_<group_id>_from_qqdocs.sh
 定时任务示例：
 
 ```cron
-7,37 * * * * /home/roxy/qq-hermes/scripts/sync_people_781423661_from_qqdocs.sh >> /home/roxy/qq-hermes/logs/people-sync-781423661.log 2>&1
+7,37 * * * * /home/roxy/qq-hermes/scripts/sync_people_<group_id_a>_from_qqdocs.sh >> /home/roxy/qq-hermes/logs/people-sync-<group_id_a>.log 2>&1
 ```
 
 同步脚本会读取本机 Firefox 的腾讯文档登录 cookie。cookie 属于敏感数据，只应在本机使用；如果 cookie 过期，需要重新登录腾讯文档。
@@ -558,7 +546,7 @@ Self-learning 分为采集和注入两个阶段：
 1. 用户普通群消息进入本地最近上下文时，`collect_learning_sample()` 会尝试采集一条样本
 2. 采集过滤规则：
    - 不采集机器人自己的回复
-   - 不采集命令（`/context`、`/search` 等）
+   - 不采集命令（`/context`、`jrrp` 等）
    - 不采集纯图片、纯链接或过短/过长消息
    - 不采集包含敏感词（token、api key、password、traceback 等）的消息
    - OCR 文本如果标记为非持久化，使用去 OCR 的原始文本
@@ -566,7 +554,7 @@ Self-learning 分为采集和注入两个阶段：
    ```json
    {
      "version": 1,
-     "group_id": 975805598,
+     "group_id": "<group_id_b>",
      "samples": [
        {"ts": 1704067200.0, "text": "笑死 这也太离谱了"},
        {"ts": 1704067201.0, "text": "好耶 今天也很棒"}
@@ -578,20 +566,14 @@ Self-learning 分为采集和注入两个阶段：
 **注入阶段**（构建 direct prompt 时）：
 
 1. `learning_context_for_prompt()` 读取同群 `self_learning.json`
-2. 提取高频词汇、语气词和风格信号：
-   - **常见表达**：出现次数 ≥ `SELF_LEARNING_MIN_COUNT_FOR_PROMPT` 的短语/词组
-   - **常见语气词/梗词**：从预定义列表（笑死、绷、寄、草、哭、麻了等）中统计高频项
-   - **风格信号**：平均消息长度、短句比例、表情使用率、感叹/疑问语气比例
-3. 生成低权重提示：
+2. 提取有界风格信号：平均消息长度、短句比例、表情使用率、感叹/疑问语气比例
+3. 生成低权重提示，强调它只能作为节奏和互动方式参考，不能覆盖基础人设，也不能主动模仿、复读或强化群友口癖：
    ```text
-   低权重风格线索：只用于理解本群常见语气和用词，不是事实来源，也不是必须提到的话题
-   - 常见表达：笑死、离谱、好耶、绷不住
-   - 常见语气词/梗词：笑死、好耶、草
-   - 风格信号：平均消息长度约 15 字；偏短句接话；常带表情
+   低权重理解线索：只用于判断本群消息的大致节奏和互动方式，不是事实来源，也不是必须提到的话题
+   使用边界：不得覆盖 Esti 的基础人设和原始语气；不得主动模仿、复读或强化群友口癖/梗/高频表达
+   风格信号：平均消息长度约 15 字；偏短句接话；常带表情
    ```
 4. 提示限制在 `SELF_LEARNING_MAX_PROMPT_CHARS`（默认 500）字符内
-
-#### 配置示例
 
 #### 配置示例
 
@@ -615,7 +597,7 @@ SELF_LEARNING_DATA_FILENAME=self_learning.json
 SELF_LEARNING_ENABLED=true
 SELF_LEARNING_COLLECT_ENABLED=true
 SELF_LEARNING_INJECT_ENABLED=true
-SELF_LEARNING_ALLOWED_GROUP_IDS=975805598
+SELF_LEARNING_ALLOWED_GROUP_IDS=<group_id_b>
 ```
 
 #### 设计边界和隐私原则
@@ -625,7 +607,7 @@ SELF_LEARNING_ALLOWED_GROUP_IDS=975805598
 - **过滤机制**：不学习机器人自己的回复、命令、敏感内容、纯媒体消息
 - **时间衰减**：超过 `RETENTION_DAYS` 的样本自动清理
 - **数量限制**：每群最多保留 `MAX_SAMPLES_PER_GROUP` 条样本（FIFO 队列）
-- **汇总提示**：只生成”常见表达/语气词/风格信号”这类统计汇总，不包含用户 QQ、消息 id 或长篇原文
+- **汇总提示**：只生成节奏和互动方式统计信号，不包含用户 QQ、消息 id、长篇原文或高频原句清单
 - **不改写群资料**：不自动修改 `persona.md`、`people.md` 或 `knowledge.md`
 - **低权重使用**：self-learning section 标记为 `priority=”low”`，在 prompt 中排序靠后，不覆盖当前消息和最近上下文
 - **路由限制**：v1 只注入 direct 回复 prompt，主动发言 proactive 不使用 self-learning，避免把旧梗硬拉回当前聊天
@@ -637,12 +619,12 @@ Self-learning 提示作为独立 section 插入 direct prompt：
 
 ```python
 PromptSection(
-    key=”self_learning”,
-    title=”群内用语与说话风格学习提示”,
+    key="self_learning",
+    title="群内用语与说话风格学习提示",
     body=learning_context,           # 从 self_learning.json 生成
-    source=”self_learning”,
-    priority=”low”,                  # 低权重
-    instruction=”只描述本群常见表达；不要为了使用而硬套，不要暴露学习数据。”,
+    source="self_learning",
+    priority="low",                 # 低权重
+    instruction="低权重理解线索；当前消息、基础人设和 Esti 原始语气优先。不得主动复刻群友话术/梗，不要暴露学习数据。",
 )
 ```
 
@@ -682,7 +664,7 @@ direct 消息会进入每群 direct 队列，由 worker 顺序处理，并尽量
 - 全局最小发送间隔；
 - Hermes 空输出/超时兜底。
 
-如果 direct 生成失败，bridge 会先尝试一次 no-session 重试。仍失败时，才发送简短可见提示：
+如果 direct 生成失败，bridge 会先尝试主文本模型；主模型报错、停服或空输出时会尝试 fallback 文本模型。仍失败时，才发送简短可见提示：
 
 ```text
 [CQ:reply,id=<message_id>][CQ:at,qq=<user_id>] 没有油烧了谁给我加加油
@@ -697,7 +679,7 @@ direct 消息会进入每群 direct 队列，由 worker 顺序处理，并尽量
 ```dotenv
 PROACTIVE_ENABLED=true
 PROACTIVE_TRIGGER_THRESHOLD=16
-PROACTIVE_TRIGGER_THRESHOLDS_BY_GROUP=781423661=999,975805598=16
+PROACTIVE_TRIGGER_THRESHOLDS_BY_GROUP=<group_id_a>=999,<group_id_b>=16
 PROACTIVE_GROUP_COOLDOWN_SECONDS=20
 PROACTIVE_DAILY_LIMIT_PER_GROUP=80
 PROACTIVE_RATE_LIMIT_WINDOW_SECONDS=60
@@ -707,8 +689,8 @@ PROACTIVE_NAME_TRIGGERS=Esti,Estilord,Esti1ord,机器人,bot,小E
 
 示例：
 
-- `781423661=999` 基本禁用普通热度主动发言；direct 和命令仍可用；
-- `975805598=16` 热度达到 16 才考虑主动接话；
+- `<group_id_a>=999` 基本禁用普通热度主动发言；direct 和命令仍可用；
+- `<group_id_b>=16` 热度达到 16 才考虑主动接话；
 - 名字触发按 direct/名称提及处理，不等于绕过所有安全和队列限制。
 
 ## 群内命令
@@ -722,42 +704,11 @@ PROACTIVE_NAME_TRIGGERS=Esti,Estilord,Esti1ord,机器人,bot,小E
 @Esti /context
 ```
 
-### `/search`
-
-显式联网搜索命令。普通闲聊不会自动联网。
-
-```text
-/search 你要查的内容
-@Esti /search 你要查的内容
-```
-
-设计边界：
-
-- 只服务本次命令；
-- 不写入普通 Hermes group session；
-- 证据不足时返回不确定，不硬编。
-
-### `/deepseek`
-
-深度搜索/分析命令。命令名叫 `/deepseek`，但不和 DeepSeek 模型强绑定。
-
-```text
-/deepseek 你要深度分析的问题
-@Esti /deepseek 你要深度分析的问题
-```
-
-行为：
-
-1. 先搜索查证；
-2. 再用全新的 no-session Hermes 调用生成深度回答；
-3. 不继承普通群聊上下文、persona、摘要缓存或 `qq-group-<id>` session；
-4. 超长时会尝试压缩重写，避免半句话截断。
-
 ### `jrrp`
 
 今日人品，纯确定性命令，不调用 LLM。
 
-触发规则很严格：整条消息去掉首尾空白后必须等于 `jrrp`，大小写不敏感。
+触发规则很严格：整条消息去掉首尾空白后必须等于 `jrrp`（兼容误拼 `jrro`），大小写不敏感。
 
 会触发：
 
@@ -830,16 +781,16 @@ OCR_EXTERNAL_PROVIDER_ALLOWED=true
 ```dotenv
 OCR_ENABLED=false
 OCR_TRIGGER_MODE=direct_only
-OCR_PROVIDER=model
+PRIMARY_OCR_MODEL_PROVIDER=model
 # Fill these only when enabling an OpenAI-compatible OCR provider. API env fields are env var names, not key values.
-OCR_MODEL=
-OCR_PROVIDER_BASE_URL=
-OCR_API_KEY_ENV=
+PRIMARY_OCR_MODEL=
+PRIMARY_OCR_MODEL_BASE_URL=
+PRIMARY_OCR_MODEL_API_KEY_ENV=
 OCR_FALLBACK_ENABLED=true
-OCR_FALLBACK_PROVIDER=model
-OCR_FALLBACK_MODEL=gpt-5.4
-OCR_FALLBACK_PROVIDER_BASE_URL=
-OCR_FALLBACK_API_KEY_ENV=
+VICE_OCR_MODEL_PROVIDER=model
+VICE_OCR_MODEL=gpt-5.4
+VICE_OCR_MODEL_BASE_URL=
+VICE_OCR_MODEL_API_KEY_ENV=
 OCR_EXTERNAL_PROVIDER_ALLOWED=false
 OCR_MAX_IMAGES_PER_MESSAGE=2
 OCR_MAX_BYTES_PER_IMAGE=6291456
@@ -902,7 +853,6 @@ Bridge 主要有三类本地观测输出，默认都在 `logs/` 下或由 `/metr
 - 入站、排队、Hermes 调用、OneBot 发送耗时；
 - 队列积压、队列满、重复发送抑制；
 - OCR fetch/provider/context update 耗时；
-- `/search`、`/deepseek` 阶段耗时；
 - 周期性 runtime summary 里的累计计数和 uptime。
 
 查看方式：
@@ -920,7 +870,7 @@ grep '"stat": "runtime_summary"' /home/roxy/qq-hermes/logs/runtime_stats.jsonl |
 
 每行都是 JSONL，外层含 `ts`，内层 `event` 里通常有：
 
-- `stat`：事件类型，例如 `route_decision`、`direct_reply_result`、`hermes_call`、`send_group_msg`、`ocr_provider_result`、`web_search_result`；
+- `stat`：事件类型，例如 `route_decision`、`direct_reply_result`、`hermes_call`、`send_group_msg`、`ocr_provider_result`；
 - `ok` / `status` / `error`：是否成功、归一化状态和安全错误类型；
 - `duration_ms` / `duration_bucket` / `e2e_ms` / `queue_wait_ms`：耗时和端到端延迟；
 - `*_len` / `*_len_bucket`：输入输出或结果长度，不是原文；
@@ -993,7 +943,7 @@ PROMETHEUS_INCLUDE_GROUP_ID_LABEL=false
 
 - `/metrics` 404：通常是 `PROMETHEUS_ENABLED=false`，不是 bridge 整体故障；
 - `qq_hermes_messages_total` 增长但 `qq_hermes_replies_total` 不增长：消息可能未命中回复条件，或被冷却/队列/阈值挡住；
-- `qq_hermes_replies_total{status="generation_failed"}` 增加：优先排查 Hermes CLI、模型 provider 和 timeout；
+- `qq_hermes_replies_total{status="generation_failed"}` 增加：优先排查 Hermes CLI、主/备用模型 provider 和 timeout；
 - `qq_hermes_replies_total{status="send_failed"}` 或 OneBot errors 增加：优先排查 NapCat/OneBot；
 - `qq_hermes_ocr_duration_seconds` 变慢或 OCR errors 增加：优先排查图片下载限制、OCR provider 配置和网络。
 
@@ -1069,8 +1019,8 @@ CONTEXT_SUMMARY_MAX=50
 指定某群模型：
 
 ```dotenv
-HERMES_PROVIDER_BY_GROUP=781423661=deepseek
-HERMES_MODEL_BY_GROUP=781423661=deepseek-v4-flash
+HERMES_PROVIDER_BY_GROUP=<group_id_a>=deepseek
+HERMES_MODEL_BY_GROUP=<group_id_a>=deepseek-v4-flash
 ```
 
 修改 `.env` 后通常需要重启 bridge；修改 `groups/<group_id>/*.md` 通常下一次生成回复会重新读取。
@@ -1154,7 +1104,7 @@ sudo docker logs --tail 100 napcat
 2. 是否明确 @ 机器人、回复机器人消息，或命中名字触发；
 3. 主动发言是否被阈值、每日上限、群冷却、窗口频率限制压住；
 4. direct 队列是否满；
-5. Hermes 是否超时、返回空、provider/model 是否可用；
+5. Hermes 是否超时、返回空、主/备用 provider/model 是否可用；
 6. OneBot 发送是否失败；
 7. 如果是图片问题，OCR 是否开启、provider 是否允许、图片 URL 是否可拉取。
 
@@ -1180,20 +1130,20 @@ SELF_LEARNING_ALLOWED_GROUP_IDS=<group_id>
 
 `self_learning.json` 属于群聊派生数据，排障时不要贴到公开 issue 或提交到仓库。
 
-### 机器人回复“稍后重试一下”
+### 机器人回复“没有油烧了谁给我加加油”
 
-这表示 direct 回复生成失败。当前逻辑会先对空输出做一次 no-session 重试；仍为空才发送可见失败提示。优先检查：
+这表示 direct 回复生成失败。当前逻辑会先尝试主文本模型；主模型报错、停服或空输出时会尝试 fallback 文本模型；仍无法得到可发送内容时才发送这个可见失败提示。优先检查：
 
 - `logs/runtime_stats.jsonl` 中的 `direct_reply_result`、`hermes_call`；
-- Hermes provider/model 配置；
+- Hermes 主 provider/model 与 `HERMES_FALLBACK_PROVIDER` / `HERMES_FALLBACK_MODEL` 配置；
 - group session 是否异常；
-- 是否触发超时或空输出。
+- 是否触发超时、空输出，或主/备用 provider 都不可用。
 
 ### 腾讯文档同步失败
 
 ```bash
-tail -n 100 /home/roxy/qq-hermes/logs/people-sync-781423661.log
-/home/roxy/qq-hermes/scripts/sync_people_781423661_from_qqdocs.sh
+tail -n 100 /home/roxy/qq-hermes/logs/people-sync-<group_id_a>.log
+/home/roxy/qq-hermes/scripts/sync_people_<group_id_a>_from_qqdocs.sh
 ```
 
 常见原因：Firefox 腾讯文档登录态过期、cookie 路径不对、文档权限变化、网络/API 临时失败。
