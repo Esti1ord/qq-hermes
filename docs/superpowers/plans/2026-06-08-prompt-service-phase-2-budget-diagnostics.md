@@ -21,7 +21,7 @@ Do not modify:
 
 - `bridge.py`
 - `qq_hermes_bridge/commands.py` unless a compatibility test proves a wrapper defect
-- search/deepseek modules
+- removed search command modules
 - context persistence modules
 - `qq_hermes_bridge/jrrp.py`
 

@@ -23,7 +23,7 @@ qq-hermes/
 │   ├── metrics.py            # dependency-free Prometheus text exporter
 │   ├── app_helpers.py        # request auth and health response helpers
 │   ├── handlers.py           # routing decisions
-│   ├── commands.py           # /context, /search, /deepseek, jrrp command helpers
+│   ├── commands.py           # /context, jrrp command helpers
 │   ├── runtime_stats.py      # content-safe JSONL stat sanitization helpers
 │   └── ...                   # focused business modules
 ├── tests/                    # pytest tests, many import bridge.py directly by path

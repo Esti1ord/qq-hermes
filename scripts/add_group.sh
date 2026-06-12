@@ -48,8 +48,8 @@ if [ ! -f "$group_dir/knowledge.md" ]; then
   cat > "$group_dir/knowledge.md" <<EOF
 # 群 $group_id 知识库
 
-记录本群稳定知识、常用链接、可信来源或搜索提示。
-主要供 /search 和 /deepseek 查证方向使用；普通闲聊不会直接读取这里。
+记录本群稳定知识、常用链接和可信来源。
+普通闲聊不会直接读取这里；涉及实时或不确定事实时不要把这里当成搜索结果。
 EOF
 fi
 

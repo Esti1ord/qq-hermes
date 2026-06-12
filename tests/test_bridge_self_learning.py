@@ -114,10 +114,14 @@ def test_build_prompt_includes_group_self_learning_context(monkeypatch, tmp_path
 
     prompt = bridge.build_prompt(make_group_event("Esti 怎么看", user_id=222, message_id=2003), "Esti 怎么看")
 
+    learning_section = prompt.split("## 群内用语与说话风格学习提示", 1)[1].split("\n## ", 1)[0]
     assert "群内用语与说话风格学习提示" in prompt
-    assert "常见表达" in prompt
-    assert "笑死" in prompt
-    assert "离谱" in prompt
+    assert "低权重理解线索" in learning_section
+    assert "Esti 原始语气优先" in learning_section
+    assert "不得主动复刻群友话术/梗" in learning_section
+    assert "常见表达" not in learning_section
+    assert "笑死" not in learning_section
+    assert "离谱" not in learning_section
 
 
 def test_build_prompt_logs_section_diagnostics_without_prompt_text(monkeypatch, tmp_path):

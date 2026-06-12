@@ -13,7 +13,7 @@ Split the monolithic `bridge.py` (3485 lines, 255 functions) into a maintainable
   - FastAPI app definition and 4 routes (`/health`, `/onebot`, `/test`)
   - Direct/proactive reply workers
   - Main entry point (uvicorn)
-  
+
 - **Existing modules** (well-organized):
   - 25 modules in `qq_hermes_bridge/` package
   - `runtime_stats.py`: JSON logging (no Prometheus yet)
@@ -65,12 +65,12 @@ Split the monolithic `bridge.py` (3485 lines, 255 functions) into a maintainable
      - `qq_hermes_messages_total{route, group_id, result}` - Message routing decisions
      - `qq_hermes_replies_total{type, status}` - Reply attempts and outcomes
      - `qq_hermes_errors_total{component, error_type}` - Error tracking
-   
+
    - **Histograms**:
      - `qq_hermes_reply_duration_seconds{type}` - E2E reply latency
      - `qq_hermes_hermes_call_duration_seconds` - Hermes CLI call time
      - `qq_hermes_ocr_duration_seconds{status}` - OCR processing time
-   
+
    - **Gauges**:
      - `qq_hermes_queue_size{group_id, type}` - Current queue depth
      - `qq_hermes_context_messages{group_id}` - Context cache size
@@ -210,7 +210,7 @@ Split the monolithic `bridge.py` (3485 lines, 255 functions) into a maintainable
 
 **Context**: bridge.py has grown to 3485 lines mixing concerns (config, routing, workers, utilities). No production metrics exist beyond JSONL logs.
 
-**Decision**: 
+**Decision**:
 1. Extract config → **flat dataclass** with typed interface (100+ fields, one-to-one mapping from globals)
 2. Extract app → factory pattern for testability
 3. Add Prometheus → standard `/metrics` endpoint, dual output with JSONL

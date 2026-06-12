@@ -7,7 +7,6 @@ SQLAlchemy, or any runtime hooks.
 """
 from __future__ import annotations
 
-from collections import Counter
 from dataclasses import dataclass
 import json
 import re
@@ -20,11 +19,6 @@ DEFAULT_LEARNING_CONTEXT = "（暂无群内用语/风格学习提示）"
 _VERSION = 1
 _CQ_CODE_RE = re.compile(r"\[CQ:[^\]]+\]")
 _URL_RE = re.compile(r"https?://\S+|www\.\S+", re.IGNORECASE)
-_TOKEN_RE = re.compile(r"[一-鿿A-Za-z0-9_]{2,12}")
-_SENTENCE_SPLIT_RE = re.compile(r"[\s，。！？!?、；;：:（）()\[\]{}<>《》\"'“”‘’]+")
-_TONE_WORDS = ("笑死", "绷", "寄", "草", "哭", "麻了", "离谱", "好耶", "啊", "呀", "嘛", "捏", "喵", "呜呜")
-
-
 @dataclass(frozen=True)
 class SelfLearningConfig:
     enabled: bool
@@ -177,22 +171,6 @@ def collect_learning_sample(
         return False
 
 
-def _extract_tokens(text: str) -> list[str]:
-    tokens: list[str] = []
-    for token in _TOKEN_RE.findall(text):
-        token = token.strip()
-        if len(token) < 2:
-            continue
-        if token.isdigit():
-            continue
-        tokens.append(token)
-    for part in _SENTENCE_SPLIT_RE.split(text):
-        part = part.strip()
-        if 2 <= len(part) <= 8 and not part.isdigit():
-            tokens.append(part)
-    return tokens
-
-
 def _style_summary(samples: list[str]) -> list[str]:
     if not samples:
         return []
@@ -221,28 +199,15 @@ def _format_learning_context(samples: list[dict[str, Any]], *, config: SelfLearn
     if not texts:
         return DEFAULT_LEARNING_CONTEXT
 
-    counts: Counter[str] = Counter()
-    tone_counts: Counter[str] = Counter()
-    for text in texts:
-        counts.update(_extract_tokens(text))
-        for word in _TONE_WORDS:
-            if word in text:
-                tone_counts[word] += 1
-
-    min_count = max(1, config.min_count_for_prompt)
-    phrases = [token for token, count in counts.most_common(12) if count >= min_count]
-    tone_words = [token for token, count in tone_counts.most_common(8) if count >= min_count]
     style = _style_summary(texts)
-
-    lines: list[str] = ["低权重风格线索：只用于理解本群常见语气和用词，不是事实来源，也不是必须提到的话题"]
-    if phrases:
-        lines.append("常见表达：" + "、".join(phrases[:8]))
-    if tone_words:
-        lines.append("常见语气词/梗词：" + "、".join(tone_words[:6]))
-    if style:
-        lines.append("风格信号：" + "；".join(style))
-    if len(lines) == 1:
+    if not style:
         return DEFAULT_LEARNING_CONTEXT
+
+    lines: list[str] = [
+        "低权重理解线索：只用于判断本群消息的大致节奏和互动方式，不是事实来源，也不是必须提到的话题",
+        "使用边界：不得覆盖 Esti 的基础人设和原始语气；不得主动模仿、复读或强化群友口癖/梗/高频表达",
+        "风格信号：" + "；".join(style),
+    ]
 
     context = "\n".join(f"- {line}" for line in lines)
     limit = max(0, config.max_prompt_chars)

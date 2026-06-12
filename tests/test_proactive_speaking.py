@@ -368,16 +368,14 @@ def test_parallel_identical_proactive_replies_suppress_duplicate_send(monkeypatc
     assert sent == [(975805598, "气溶质上听着像把姓氏学做成了化学题")]
 
 
-def test_proactive_reply_does_not_trigger_web_search_or_notice(monkeypatch):
+def test_proactive_reply_handles_realtime_topic_without_search_notice(monkeypatch):
     bridge = load_bridge_module()
     configure_proactive(bridge)
     bridge.PROACTIVE_TRIGGER_THRESHOLD = 1.0
     bridge.PROACTIVE_GROUP_COOLDOWN_SECONDS = 0.0
     bridge.MIN_SECONDS_BETWEEN_REPLIES = 0.0
-    bridge.WEB_SEARCH_ENABLED = True
     sent = []
 
-    monkeypatch.setattr(bridge, "run_web_search", lambda query: (_ for _ in ()).throw(AssertionError("proactive replies must not search")))
     monkeypatch.setattr(bridge, "run_hermes_raw", lambda prompt, *args, **kwargs: "还没官宣 先别急")
 
     async def fake_send(group_id, message):

@@ -35,15 +35,9 @@ def command_action_for_text(
     event: dict[str, Any],
     group_id: int | None,
     is_context_command_fn: Callable[[str], bool],
-    is_search_command_fn: Callable[[str], bool],
-    search_command_query_fn: Callable[[str], str],
-    is_deepseek_command_fn: Callable[[str], bool],
-    deepseek_command_query_fn: Callable[[str], str],
     is_jrrp_command_fn: Callable[[str], bool],
     sender_name_fn: Callable[[dict[str, Any]], str],
     build_context_reply_fn: Callable[[int | None], str],
-    build_search_reply_fn: Callable[..., str],
-    build_deepseek_reply_fn: Callable[..., str],
     build_jrrp_reply_fn: Callable[[Any, str], tuple[str, bool]],
 ) -> CommandAction | None:
     if is_context_command_fn(user_text):
@@ -54,27 +48,6 @@ def command_action_for_text(
             "log_type": "context_command",
             "remember_context": True,
             "extra": {},
-        }
-    if is_search_command_fn(user_text):
-        query = search_command_query_fn(user_text)
-        return {
-            "kind": "threaded_immediate",
-            "command": "search",
-            "query": query,
-            "trigger": "search_command",
-            "log_type": "search_command",
-            "remember_context": False,
-            "extra": {"query": query[:200]},
-        }
-    if is_deepseek_command_fn(user_text):
-        query = deepseek_command_query_fn(user_text)
-        return {
-            "kind": "threaded_immediate",
-            "query": query,
-            "trigger": "deepseek_command",
-            "log_type": "deepseek_command",
-            "remember_context": False,
-            "extra": {"query": query[:200]},
         }
     if is_jrrp_command_fn(user_text):
         reply, first_draw = build_jrrp_reply_fn(event.get("user_id"), sender_name_fn(event))

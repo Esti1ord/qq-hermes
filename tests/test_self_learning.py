@@ -73,13 +73,17 @@ def test_collects_group_samples_and_formats_low_weight_context(tmp_path):
         now=1003,
     )
 
-    assert "低权重风格线索" in context
+    assert "低权重理解线索" in context
     assert "不是事实来源" in context
     assert "不是必须提到的话题" in context
-    assert "常见表达" in context
-    assert "笑死" in context
-    assert "离谱" in context
+    assert "使用边界" in context
+    assert "不得覆盖 Esti 的基础人设和原始语气" in context
+    assert "不得主动模仿、复读或强化群友口癖/梗/高频表达" in context
     assert "风格信号" in context
+    assert "常见表达" not in context
+    assert "常见语气词/梗词" not in context
+    assert "笑死" not in context
+    assert "离谱" not in context
     assert "self_learning.json" not in context
 
 
@@ -110,7 +114,8 @@ def test_prompt_context_uses_target_group_when_group_id_is_none(tmp_path):
         now=1001,
     )
 
-    assert "本群口头禅" in context
+    assert "低权重理解线索" in context
+    assert "本群口头禅" not in context
 
 
 def test_collect_errors_are_swallowed_and_reported(tmp_path):

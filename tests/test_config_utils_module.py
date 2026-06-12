@@ -138,9 +138,18 @@ def test_load_config_includes_text_and_ocr_fallback_defaults(tmp_path, monkeypat
     monkeypatch.setenv("GROUP_IDS", "975805598")
     for name in (
         "HERMES_FALLBACK_ENABLED",
+        "VICE_CHAT_MODEL",
+        "VICE_CHAT_MODEL_PROVIDER",
         "HERMES_FALLBACK_MODEL",
         "HERMES_FALLBACK_PROVIDER",
         "OCR_FALLBACK_ENABLED",
+        "VICE_OCR_MODEL_PROVIDER",
+        "VICE_OCR_MODEL",
+        "VICE_OCR_MODEL_BASE_URL",
+        "VICE_OCR_MODEL_URL",
+        "VICE_OCR_MODEL_API_KEY_ENV",
+        "VICE_OCR_MODEL_API_KEY",
+        "VICE_OCR_MODEL_API",
         "OCR_FALLBACK_PROVIDER",
         "OCR_FALLBACK_MODEL",
         "OCR_FALLBACK_PROVIDER_BASE_URL",

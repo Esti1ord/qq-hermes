@@ -62,7 +62,6 @@ SAFE_LABEL_KEYS = {
     "failure_notice_sent",
     "queue_size",
     "queue_remaining",
-    "search_notice_sent",
     "truncated",
     "chars",
     "redacted_chars",
