@@ -24,8 +24,9 @@ QQ 群消息
 |---|---|
 | 项目目录 | `/home/roxy/qq-hermes` |
 | Bridge 服务 | `qq-hermes-bridge.service` |
-| Bridge health | `http://127.0.0.1:8765/health` |
-| OneBot webhook | `http://<bridge-host>:8765/onebot` |
+| Bridge health | `http://127.0.0.1:18765/health` |
+| Bridge admin page | `http://127.0.0.1:18765/admin`（保持现有本机访问 / token 限制） |
+| OneBot webhook | `http://<bridge-host>:18765/onebot` |
 | NapCat HTTP API | `http://127.0.0.1:3000` |
 | NapCat WebUI | `http://127.0.0.1:6099/webui` |
 | NapCat 容器 | `napcat` |
@@ -187,7 +188,7 @@ journalctl --user -u qq-hermes-bridge.service -f
 健康检查接口：
 
 ```bash
-curl -sS http://127.0.0.1:8765/health
+curl -sS http://127.0.0.1:18765/health
 ```
 
 NapCat 容器常用命令：
@@ -277,7 +278,7 @@ http://127.0.0.1:6099/webui
 
 ```text
 HTTP API server: 0.0.0.0:3000, messagePostFormat=array
-HTTP client: http://<bridge-host>:8765/onebot, reportSelfMessage=true, messagePostFormat=array
+HTTP client: http://<bridge-host>:18765/onebot, reportSelfMessage=true, messagePostFormat=array
 ```
 
 ## Hermes 调用方式
@@ -945,7 +946,7 @@ PERF_OBS_SAMPLE_RATE=1.0
 Bridge 也提供 Prometheus 兼容文本指标端点：
 
 ```bash
-curl -sS http://127.0.0.1:8765/metrics
+curl -sS http://127.0.0.1:18765/metrics
 ```
 
 `/metrics` 面向 Prometheus、Grafana 或临时 curl 诊断，用来观察当前桥接服务的总体健康趋势：消息是否还在进来、回复是否成功、队列是否积压、Hermes/OCR 是否变慢、OneBot 是否发送失败。它不是聊天内容查询接口，也不是每日必看的人工仪表盘。
@@ -984,7 +985,7 @@ Prometheus scrape 示例：
 scrape_configs:
   - job_name: qq-hermes-bridge
     static_configs:
-      - targets: ["127.0.0.1:8765"]
+      - targets: ["127.0.0.1:18765"]
 ```
 
 ### `logs/content_analysis.jsonl`
@@ -1102,7 +1103,7 @@ git add -n .
 ```bash
 systemctl --user status qq-hermes-bridge.service --no-pager
 journalctl --user -u qq-hermes-bridge.service -n 100 --no-pager
-curl -sS http://127.0.0.1:8765/health
+curl -sS http://127.0.0.1:18765/health
 ```
 
 常见原因：`.env` 配置错误、Python 虚拟环境不可执行、端口被占用、Hermes CLI 路径错误。
