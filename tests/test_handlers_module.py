@@ -36,39 +36,6 @@ def test_precheck_group_message_ignores_non_group_and_other_group():
     assert handlers.precheck_group_message({"post_type": "message", "message_type": "group", "group_id": 1}, is_allowed_group_fn=lambda event: True) is None
 
 
-def test_command_action_selects_first_matching_command():
-    event = {"group_id": 123}
-    calls = []
-
-    action = handlers.command_action_for_text(
-        "/search 河海土木",
-        event=event,
-        group_id=123,
-        is_context_command_fn=lambda text: False,
-        is_search_command_fn=lambda text: text.startswith("/search"),
-        search_command_query_fn=lambda text: text.removeprefix("/search").strip(),
-        is_deepseek_command_fn=lambda text: False,
-        deepseek_command_query_fn=lambda text: "",
-        is_jrrp_command_fn=lambda text: False,
-        sender_name_fn=lambda event: "甲",
-        build_context_reply_fn=lambda group_id: "context",
-        build_search_reply_fn=lambda query, group_id=None: calls.append(("search", query, group_id)) or "search reply",
-        build_deepseek_reply_fn=lambda query, group_id=None: "deepseek reply",
-        build_jrrp_reply_fn=lambda user_id, name: ("jrrp reply", True),
-    )
-
-    assert action == {
-        "kind": "threaded_immediate",
-        "command": "search",
-        "query": "河海土木",
-        "trigger": "search_command",
-        "log_type": "search_command",
-        "remember_context": False,
-        "extra": {"query": "河海土木"},
-    }
-    assert calls == []
-
-
 def test_command_action_handles_context_and_jrrp_metadata():
     event = {"user_id": 456, "group_id": 123}
 
@@ -77,15 +44,9 @@ def test_command_action_handles_context_and_jrrp_metadata():
         event=event,
         group_id=123,
         is_context_command_fn=lambda text: True,
-        is_search_command_fn=lambda text: False,
-        search_command_query_fn=lambda text: "",
-        is_deepseek_command_fn=lambda text: False,
-        deepseek_command_query_fn=lambda text: "",
         is_jrrp_command_fn=lambda text: False,
         sender_name_fn=lambda event: "甲",
         build_context_reply_fn=lambda group_id: "context reply",
-        build_search_reply_fn=lambda query, group_id=None: "search reply",
-        build_deepseek_reply_fn=lambda query, group_id=None: "deepseek reply",
         build_jrrp_reply_fn=lambda user_id, name: ("jrrp reply", True),
     )
     assert context_action["trigger"] == "context_command"
@@ -96,15 +57,9 @@ def test_command_action_handles_context_and_jrrp_metadata():
         event=event,
         group_id=123,
         is_context_command_fn=lambda text: False,
-        is_search_command_fn=lambda text: False,
-        search_command_query_fn=lambda text: "",
-        is_deepseek_command_fn=lambda text: False,
-        deepseek_command_query_fn=lambda text: "",
         is_jrrp_command_fn=lambda text: True,
         sender_name_fn=lambda event: "甲",
         build_context_reply_fn=lambda group_id: "context reply",
-        build_search_reply_fn=lambda query, group_id=None: "search reply",
-        build_deepseek_reply_fn=lambda query, group_id=None: "deepseek reply",
         build_jrrp_reply_fn=lambda user_id, name: ("jrrp reply", False),
     )
     assert jrrp_action["reply"] == "jrrp reply"
@@ -117,15 +72,9 @@ def test_command_action_returns_none_for_plain_chat():
         event={"group_id": 123},
         group_id=123,
         is_context_command_fn=lambda text: False,
-        is_search_command_fn=lambda text: False,
-        search_command_query_fn=lambda text: "",
-        is_deepseek_command_fn=lambda text: False,
-        deepseek_command_query_fn=lambda text: "",
         is_jrrp_command_fn=lambda text: False,
         sender_name_fn=lambda event: "甲",
         build_context_reply_fn=lambda group_id: "context reply",
-        build_search_reply_fn=lambda query, group_id=None: "search reply",
-        build_deepseek_reply_fn=lambda query, group_id=None: "deepseek reply",
         build_jrrp_reply_fn=lambda user_id, name: ("jrrp reply", True),
     )
     assert action is None

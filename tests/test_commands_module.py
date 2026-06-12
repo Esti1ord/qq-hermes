@@ -37,18 +37,20 @@ def test_build_chat_prompt_renders_runtime_context_and_rules():
     assert "当前被 @ 的消息和被回复/引用的消息是本次任务" in prompt
     assert "不是必须复用的话题清单" in prompt
     assert "相关群友资料只是弱匹配线索" in prompt
-    assert "群内用语与说话风格学习提示只作为低权重风格参考" in prompt
-    assert "不要解释“我学到/记录到/数据库里有”" in prompt
-    assert "不确定含义的群内词可以轻轻沿用语气" in prompt
+    assert "群内用语与说话风格学习提示只作为低权重理解线索" in prompt
+    assert "基础人设和 Esti 原始语气优先" in prompt
+    assert "不要主动复刻、复读或强化群友话术" in prompt
     assert "不要模仿或重复旧措辞/旧梗" in prompt
     assert "只输出要发到群里的正文" in prompt
 
 
 def test_build_chat_prompt_accepts_custom_learning_context():
-    prompt = build_chat_prompt_for_test(learning_context="- 常见表达：笑死、寄\n- 风格信号：短句偏多")
+    prompt = build_chat_prompt_for_test(
+        learning_context="- 低权重理解线索：只判断互动节奏\n- 风格信号：短句偏多"
+    )
 
     assert "群内用语与说话风格学习提示" in prompt
-    assert "常见表达：笑死、寄" in prompt
+    assert "低权重理解线索：只判断互动节奏" in prompt
     assert "风格信号：短句偏多" in prompt
 
 
@@ -103,24 +105,3 @@ def test_context_command_reply_hides_context_command_echoes_and_fits_budget():
     assert "旧输出" not in reply
     assert "乙乙乙乙乙乙乙乙乙乙乙乙" in reply
     assert len(reply) <= 180
-
-
-def test_deepseek_finalizer_compresses_before_whole_clause_fallback():
-    raw = "第一句很长但完整。第二句也很重要。第三句兜底。"
-    calls = []
-
-    reply = commands.finalize_deepseek_command_reply(
-        raw,
-        query="问题",
-        search_result="证据",
-        max_reply_chars=10,
-        strip_session_footer_fn=lambda text: text,
-        prepare_reply_text_fn=lambda text: text,
-        empty_reply_fn=lambda raw, query: "空回复",
-        compress_fn=lambda query, draft, search_result, group_id=None: calls.append((query, draft, search_result, group_id)) or "压缩后完整",
-        whole_clause_fit_fn=lambda text, limit: text[:limit],
-        group_id=123,
-    )
-
-    assert reply == "压缩后完整"
-    assert calls == [("问题", raw, "证据", 123)]

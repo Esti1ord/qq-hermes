@@ -74,4 +74,5 @@ def test_add_group_script_default_files_describe_expected_formats(tmp_path):
     assert "群 123456789 提示词" in persona
     assert "## QQ号或主要昵称" in people
     assert "昵称" in people and "标签" in people
-    assert "/search" in knowledge and "/deepseek" in knowledge
+    assert "稳定知识" in knowledge and "普通闲聊不会直接读取" in knowledge
+    assert "查证方向" not in knowledge

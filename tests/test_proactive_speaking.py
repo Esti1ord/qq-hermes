@@ -257,10 +257,10 @@ def test_non_at_group_message_can_trigger_proactive_reply(monkeypatch):
     result = asyncio.run(run_event_and_drain(bridge, FakeRequest()))
 
     assert result["queued"] is True
-    assert sent == [(975805598, "这群今天像集体低电量")]
+    assert sent == [(975805598, "这群今天像集体低电量。")]
     context = bridge.format_recent_context(975805598)
     assert "发言人：Esti（QQ: 3975680980，机器人）" in context
-    assert "内容：这群今天像集体低电量" in context
+    assert "内容：这群今天像集体低电量。" in context
 
 
 def test_duplicate_onebot_events_do_not_send_duplicate_proactive_replies(monkeypatch):
@@ -288,7 +288,7 @@ def test_duplicate_onebot_events_do_not_send_duplicate_proactive_replies(monkeyp
 
     assert first["queued"] is True
     assert second["ignored"] == "duplicate_event"
-    assert sent == [(975805598, "这群今天像集体低电量")]
+    assert sent == [(975805598, "这群今天像集体低电量。")]
 
 
 def test_parallel_proactive_triggers_are_queued_not_dropped(monkeypatch):
@@ -368,16 +368,14 @@ def test_parallel_identical_proactive_replies_suppress_duplicate_send(monkeypatc
     assert sent == [(975805598, "气溶质上听着像把姓氏学做成了化学题")]
 
 
-def test_proactive_reply_does_not_trigger_web_search_or_notice(monkeypatch):
+def test_proactive_reply_handles_realtime_topic_without_search_notice(monkeypatch):
     bridge = load_bridge_module()
     configure_proactive(bridge)
     bridge.PROACTIVE_TRIGGER_THRESHOLD = 1.0
     bridge.PROACTIVE_GROUP_COOLDOWN_SECONDS = 0.0
     bridge.MIN_SECONDS_BETWEEN_REPLIES = 0.0
-    bridge.WEB_SEARCH_ENABLED = True
     sent = []
 
-    monkeypatch.setattr(bridge, "run_web_search", lambda query: (_ for _ in ()).throw(AssertionError("proactive replies must not search")))
     monkeypatch.setattr(bridge, "run_hermes_raw", lambda prompt, *args, **kwargs: "还没官宣 先别急")
 
     async def fake_send(group_id, message):
@@ -455,7 +453,7 @@ def test_non_at_estilord_message_sends_direct_qq_reply(monkeypatch):
     result = asyncio.run(run_event_and_drain(bridge, FakeRequest()))
 
     assert result["queued"] is True
-    assert sent == [(975805598, "[CQ:reply,id=987654]我在 怎么了")]
+    assert sent == [(975805598, "[CQ:reply,id=987654]我在，怎么了")]
 
 
 def test_name_trigger_records_metadata_but_keeps_rate_limit():

@@ -44,14 +44,4 @@ def test_finalize_reply_preserves_structured_lists():
 
     raw = "可以这样：\n\n1. 先检查日志\n2. 再重启服务"
 
-    assert bridge.finalize_reply(raw) == "可以这样：\n\n1 先检查日志\n2 再重启服务"
-
-
-def test_web_search_failure_messages_use_template_pool(monkeypatch):
-    bridge = load_bridge_module()
-    bridge.WEB_SEARCH_ENABLED = True
-    bridge.WEB_SEARCH_BACKEND = "curl"
-    monkeypatch.setattr(bridge, "run_curl_search", lambda query: "")
-    monkeypatch.setattr(bridge, "pick_template", lambda name, key="": f"TEMPLATE:{name}")
-
-    assert bridge.run_web_search("今天中超赛果") == "TEMPLATE:web_search_no_match"
+    assert bridge.finalize_reply(raw) == "可以这样：\n\n1. 先检查日志\n2. 再重启服务"

@@ -24,6 +24,31 @@ def load_dotenv(path: Path) -> None:
         os.environ.setdefault(k, v)
 
 
+def env_first(*names: str, default: str = "") -> str:
+    for name in names:
+        if not name:
+            continue
+        value = os.getenv(name)
+        if value is None:
+            continue
+        clean = str(value).strip()
+        if clean:
+            return clean
+    return str(default or "").strip()
+
+
+def env_name_if_set(*names: str) -> str:
+    for name in names:
+        if not name:
+            continue
+        value = os.getenv(name)
+        if value is None:
+            continue
+        if str(value).strip():
+            return name
+    return ""
+
+
 def env_list(name: str, default: str) -> list[str]:
     raw = os.getenv(name, default)
     return [x.strip() for x in re.split(r"[,，]", raw) if x.strip()]

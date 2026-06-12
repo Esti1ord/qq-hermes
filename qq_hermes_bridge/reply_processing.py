@@ -4,13 +4,12 @@ from __future__ import annotations
 from typing import Any
 
 
-def direct_reply_success_result(*, trigger: str, queue_remaining: int, search_notice_sent: bool) -> dict[str, Any]:
+def direct_reply_success_result(*, trigger: str, queue_remaining: int) -> dict[str, Any]:
     return {
         "ok": True,
         "replied": True,
         "trigger": trigger,
         "queue_remaining": queue_remaining,
-        "search_notice_sent": search_notice_sent,
     }
 
 
@@ -49,14 +48,13 @@ def direct_reply_generation_failed_result(*, trigger: str, reason: str, queue_re
     return result
 
 
-def proactive_sent_result(proactive: dict[str, Any], *, queue_remaining: int, search_notice_sent: bool) -> dict[str, Any]:
+def proactive_sent_result(proactive: dict[str, Any], *, queue_remaining: int) -> dict[str, Any]:
     return {
         "ok": True,
         "proactive_replied": True,
         "score": proactive.get("score"),
         "reasons": proactive.get("reasons", []),
         "queue_remaining": queue_remaining,
-        "search_notice_sent": search_notice_sent,
     }
 
 

@@ -36,7 +36,7 @@ PromptService 已经完成三层基础能力：
 - 不从真实群聊日志中抽取 few-shot 样例。
 - 不新增用户画像、群友画像或自学习存储格式。
 - 不改变 proactive 触发分数、冷却、队列、去重或 Hermes session 策略。
-- 不修改 `/search`、`/deepseek`、OCR prompt 或命令回复 prompt。
+- 不修改已移除的联网搜索类命令、OCR prompt 或命令回复 prompt。
 - 不添加新的外部配置 UI。
 - 不做安全/权限边界重构。
 - 不把 prompt 示例变成强制模板；模型仍应优先当前消息和最近上下文。

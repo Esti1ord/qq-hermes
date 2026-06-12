@@ -31,19 +31,3 @@ def slash_command_query(text: str, command: str) -> str:
 
 def is_context_command(text: str) -> bool:
     return has_slash_command(text, "context")
-
-
-def is_search_command(text: str) -> bool:
-    return has_slash_command(text, "search")
-
-
-def search_command_query(text: str) -> str:
-    return slash_command_query(text, "search")
-
-
-def is_deepseek_command(text: str) -> bool:
-    return has_slash_command(text, "deepseek")
-
-
-def deepseek_command_query(text: str) -> str:
-    return slash_command_query(text, "deepseek")

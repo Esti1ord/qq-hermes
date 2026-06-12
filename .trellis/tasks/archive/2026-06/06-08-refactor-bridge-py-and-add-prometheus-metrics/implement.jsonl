@@ -1,0 +1,5 @@
+{"file":".trellis/tasks/06-08-refactor-bridge-py-and-add-prometheus-metrics/prd.md","reason":"Task requirements, decisions, acceptance criteria, and phased implementation plan."}
+{"file":".trellis/spec/backend/index.md","reason":"Backend development guideline index for this single-repo project."}
+{"file":".trellis/spec/guides/index.md","reason":"Shared thinking guide index required before implementation."}
+{"file":".trellis/spec/guides/code-reuse-thinking-guide.md","reason":"Config extraction and metrics helpers must avoid duplicated constants and helper logic."}
+{"file":".trellis/spec/guides/cross-layer-thinking-guide.md","reason":"Metrics endpoint spans runtime events, FastAPI route output, and operational documentation."}

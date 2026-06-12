@@ -1,11 +1,10 @@
 from qq_hermes_bridge import reply_processing
 
 
-def test_direct_reply_success_result_includes_queue_and_search_notice():
+def test_direct_reply_success_result_includes_queue():
     result = reply_processing.direct_reply_success_result(
         trigger="reply_to_bot",
         queue_remaining=2,
-        search_notice_sent=False,
     )
 
     assert result == {
@@ -13,7 +12,6 @@ def test_direct_reply_success_result_includes_queue_and_search_notice():
         "replied": True,
         "trigger": "reply_to_bot",
         "queue_remaining": 2,
-        "search_notice_sent": False,
     }
 
 
@@ -63,13 +61,12 @@ def test_direct_reply_generation_failure_notice_result():
 def test_proactive_results_for_sent_duplicate_skipped_and_failure():
     proactive = {"score": 12.5, "reasons": ["message"], "direct_name_trigger": True}
 
-    assert reply_processing.proactive_sent_result(proactive, queue_remaining=0, search_notice_sent=False) == {
+    assert reply_processing.proactive_sent_result(proactive, queue_remaining=0) == {
         "ok": True,
         "proactive_replied": True,
         "score": 12.5,
         "reasons": ["message"],
         "queue_remaining": 0,
-        "search_notice_sent": False,
     }
     assert reply_processing.proactive_duplicate_result(proactive, queue_remaining=2)["ignored"] == "duplicate_outbound"
     assert reply_processing.proactive_skipped_result(proactive, queue_remaining=3) == {

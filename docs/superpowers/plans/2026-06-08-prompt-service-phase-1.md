@@ -37,7 +37,7 @@ Create and modify only these planned files:
 - Modify: `qq_hermes_bridge/commands.py`
   - Keep existing command helper functions.
   - Replace only `build_chat_prompt()` and `build_proactive_prompt()` bodies with delegation to `prompt_service`.
-  - Do not migrate `/context`, `/search`, `/deepseek`, or helper functions.
+  - Do not migrate `/context` or helper functions.
 - Create: `tests/test_prompt_service_module.py`
   - Unit tests for object model, rendering, section order, metadata, wrapper compatibility, and proactive `<SILENT>` contract.
 - Modify if needed: `tests/test_proactive_speaking.py`
@@ -49,8 +49,6 @@ No planned changes to:
 - `bridge.py`
 - `qq_hermes_bridge/context_store.py`
 - `qq_hermes_bridge/self_learning.py`
-- `qq_hermes_bridge/search.py`
-- `qq_hermes_bridge/search_runtime.py`
 - `qq_hermes_bridge/hermes_runtime.py`
 - `qq_hermes_bridge/jrrp.py`
 
@@ -365,7 +363,7 @@ DIRECT_RULES = [
     "预设提示词是弱约束；当前消息、引用消息、近二十条上下文优先；如果引用原文没缓存到，也要结合当前消息和最近上下文继续答，不要让对方重发；不同编号/QQ 不要合并成同一人。如果 A 发一句话，B 接一句“笑死我了”，要明确这是 B 在笑 A/前一句，而不是 A 自己说笑死。",
     "如果上下文出现“Esti（机器人，正在生成回复）”，不要重复回答那条 pending 问题，聚焦当前消息。",
     "图片识别结果只是辅助线索，可能漏字或误识别；如果图片内容看不清或识别失败，不要编造细节。",
-    "普通聊天不要声称自己正在联网搜索、实时查询或查官方结果；如果需要实时信息，让群友使用 /search 命令。",
+    "普通聊天不要声称自己正在联网搜索、实时查询或查官方结果；需要实时或外部事实时，如果上下文没有可靠来源，就直接说明不能实时核查。",
     "中文自然群聊口吻，1-3 句话；少 AI/客服腔，不主动自称 AI/机器人/助手。",
     "标点风格强约束：少用句号和逗号；不要使用句号和引号；短回复可用空格代替逗号。",
     "可承认自己是 Esti，但不要编造真人经历、位置、身份或线下行为。",
@@ -654,7 +652,7 @@ PROACTIVE_RULES = [
     "如果不适合插话或实在没话接就保持沉默；不要解释沉默原因或输出规则，不要说自己没想好、没组织好、卡住了、等会再说。",
     "如果适合插话但当前句子不好接，可以自然开一个很轻的小话题或抛一句群友式短梗；只输出一句自然群聊发言，最多两句。",
     "敏感/吵架/隐私/违法也保持沉默。",
-    "主动发言和普通聊天都不要声称自己正在联网搜索、实时查询或查官方结果；需要实时信息时让群友使用 /search 命令。",
+    "主动发言和普通聊天都不要声称自己正在联网搜索、实时查询或查官方结果；需要实时或外部事实时，如果上下文没有可靠来源，就直接说明不能实时核查。",
     "标点风格强约束：少用句号和逗号；不要使用句号和引号；短回复可用空格代替逗号。",
     "少 AI/客服腔；不主动自称 AI/机器人/助手；不主动 @ 人，不发链接，不泄露内部信息。",
     "可承认自己是 Esti，但不要编造真人经历、位置、身份或线下行为。",
@@ -1067,7 +1065,7 @@ Skip this commit if there are no additional planned edits.
   - tests for section order, metadata, wrapper compatibility, `<SILENT>` once: Tasks 1-4.
   - full verification: Task 5.
 - Scope control:
-  - No search/deepseek migration.
+  - No removed search command migration.
   - No bridge.py behavior changes.
   - No persistence changes.
   - No permission/security changes.

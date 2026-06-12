@@ -114,6 +114,103 @@ def test_build_hermes_cmd_uses_group_model_provider_overrides():
     assert default[default.index("--provider") + 1] == "default-provider"
 
 
+def test_bridge_import_prefers_primary_and_vice_chat_aliases(monkeypatch):
+    monkeypatch.setenv("PRIMARY_CHAT_MODEL", "alias-primary-text")
+    monkeypatch.setenv("PRIMARY_CHAT_MODEL_PROVIDER", "deepseek")
+    monkeypatch.setenv("VICE_CHAT_MODEL", "alias-fallback-text")
+    monkeypatch.setenv("VICE_CHAT_MODEL_PROVIDER", "openai-gpt")
+    monkeypatch.setenv("HERMES_MODEL", "legacy-primary-text")
+    monkeypatch.setenv("HERMES_PROVIDER", "legacy-primary-provider")
+    monkeypatch.setenv("HERMES_FALLBACK_MODEL", "legacy-fallback-text")
+    monkeypatch.setenv("HERMES_FALLBACK_PROVIDER", "legacy-fallback-provider")
+
+    bridge = load_bridge_module()
+
+    assert bridge.HERMES_MODEL == "alias-primary-text"
+    assert bridge.HERMES_PROVIDER == "deepseek"
+    assert bridge.HERMES_FALLBACK_MODEL == "alias-fallback-text"
+    assert bridge.HERMES_FALLBACK_PROVIDER == "openai-gpt"
+
+
+def test_run_hermes_start_log_does_not_include_prompt_model_or_provider(monkeypatch):
+    bridge = load_bridge_module()
+    bridge.HERMES_BIN = "hermes"
+    bridge.HERMES_MODEL = "secret-model-name"
+    bridge.HERMES_PROVIDER = "secret-provider-name"
+    bridge.HERMES_MODEL_BY_GROUP = {}
+    bridge.HERMES_PROVIDER_BY_GROUP = {}
+    bridge.HERMES_GROUP_SESSIONS_ENABLED = False
+    bridge.HERMES_SESSION_AUTOCOMPACT_ENABLED = False
+    logs = []
+
+    class FakeCompleted:
+        returncode = 0
+        stdout = "answer"
+        stderr = ""
+
+    monkeypatch.setattr(bridge, "log", lambda event: logs.append(event))
+    monkeypatch.setattr(bridge.subprocess, "run", lambda cmd, **kwargs: FakeCompleted())
+
+    assert bridge.run_hermes_raw("SECRET_PROMPT_TEXT", group_id=781423661) == "answer"
+
+    rendered = repr(logs)
+    assert "SECRET_PROMPT_TEXT" not in rendered
+    assert "secret-model-name" not in rendered
+    assert "secret-provider-name" not in rendered
+    start = next(item for item in logs if item.get("type") == "hermes_start")
+    assert start["has_model"] is True
+    assert start["has_provider"] is True
+    assert "cmd" not in start
+
+
+def test_group_session_error_logs_do_not_include_stdout_or_stderr(monkeypatch):
+    bridge = load_bridge_module()
+    bridge.HERMES_BIN = "hermes"
+    bridge.HERMES_MODEL = ""
+    bridge.HERMES_PROVIDER = ""
+    bridge.HERMES_GROUP_SESSIONS_ENABLED = True
+    bridge.HERMES_SESSION_AUTOCOMPACT_ENABLED = False
+    logs = []
+    calls = []
+
+    class FakeMissing:
+        returncode = 1
+        stdout = "No session found matching 'qq-group-781423661'."
+        stderr = ""
+
+    class FakeCreated:
+        returncode = 0
+        stdout = "session created\n\nsession_id: 20260530_224159_7ab561\n"
+        stderr = ""
+
+    class FakeRenameFailed:
+        returncode = 2
+        stdout = "SECRET_RENAME_STDOUT"
+        stderr = "SECRET_RENAME_STDERR"
+
+    def fake_run(cmd, **kwargs):
+        calls.append(cmd)
+        if len(calls) == 1:
+            return FakeMissing()
+        if cmd[:3] == ["hermes", "sessions", "rename"]:
+            return FakeRenameFailed()
+        return FakeCreated()
+
+    monkeypatch.setattr(bridge, "log", lambda event: logs.append(event))
+    monkeypatch.setattr(bridge.subprocess, "run", fake_run)
+
+    assert bridge.run_hermes_raw("prompt", group_id=781423661) == "session created"
+
+    rendered = repr(logs)
+    assert "SECRET_RENAME_STDOUT" not in rendered
+    assert "SECRET_RENAME_STDERR" not in rendered
+    rename_error = next(item for item in logs if item.get("type") == "hermes_session_rename_error")
+    assert "stdout" not in rename_error
+    assert "stderr" not in rename_error
+    assert rename_error["stdout_len"] == len("SECRET_RENAME_STDOUT")
+    assert rename_error["stderr_len"] == len("SECRET_RENAME_STDERR")
+
+
 def test_run_hermes_can_disable_group_sessions(monkeypatch):
     bridge = load_bridge_module()
     bridge.HERMES_BIN = "hermes"
@@ -176,3 +273,105 @@ def test_run_hermes_autocompacts_oversized_group_session(monkeypatch):
     assert ["hermes", "sessions", "rename", "20260531_compacted", "qq-group-781423661"] in calls
     assert calls[-1][:4] == ["hermes", "chat", "-q", "prompt"]
     assert "--continue" in calls[-1]
+
+
+def test_run_hermes_uses_no_session_fallback_model_when_primary_fails(monkeypatch):
+    bridge = load_bridge_module()
+    bridge.HERMES_BIN = "hermes"
+    bridge.HERMES_MODEL = "primary-model"
+    bridge.HERMES_PROVIDER = "primary-provider"
+    bridge.HERMES_MODEL_BY_GROUP = {}
+    bridge.HERMES_PROVIDER_BY_GROUP = {}
+    bridge.HERMES_FALLBACK_ENABLED = True
+    bridge.HERMES_FALLBACK_MODEL = "deepseekv4flash"
+    bridge.HERMES_FALLBACK_PROVIDER = "官方"
+    bridge.HERMES_GROUP_SESSIONS_ENABLED = True
+    bridge.HERMES_SESSION_AUTOCOMPACT_ENABLED = False
+    calls = []
+
+    class FakeCompleted:
+        stderr = ""
+
+        def __init__(self, returncode, stdout):
+            self.returncode = returncode
+            self.stdout = stdout
+
+    def fake_run(cmd, **kwargs):
+        calls.append(cmd)
+        if len(calls) == 1:
+            return FakeCompleted(1, "")
+        return FakeCompleted(0, "fallback answer")
+
+    monkeypatch.setattr(bridge.subprocess, "run", fake_run)
+
+    reply = bridge.run_hermes_raw("prompt", group_id=781423661)
+
+    assert reply == "fallback answer"
+    assert len(calls) == 2
+    assert "--continue" in calls[0]
+    assert "--continue" not in calls[1]
+    assert calls[1][calls[1].index("--model") + 1] == "deepseekv4flash"
+    assert calls[1][calls[1].index("--provider") + 1] == "官方"
+
+
+def test_run_hermes_uses_fallback_for_empty_primary_output(monkeypatch):
+    bridge = load_bridge_module()
+    bridge.HERMES_BIN = "hermes"
+    bridge.HERMES_MODEL = "primary-model"
+    bridge.HERMES_PROVIDER = "primary-provider"
+    bridge.HERMES_MODEL_BY_GROUP = {}
+    bridge.HERMES_PROVIDER_BY_GROUP = {}
+    bridge.HERMES_FALLBACK_ENABLED = True
+    bridge.HERMES_FALLBACK_MODEL = "deepseekv4flash"
+    bridge.HERMES_FALLBACK_PROVIDER = "官方"
+    bridge.HERMES_GROUP_SESSIONS_ENABLED = False
+    calls = []
+
+    class FakeCompleted:
+        returncode = 0
+        stderr = ""
+
+        def __init__(self, stdout):
+            self.stdout = stdout
+
+    def fake_run(cmd, **kwargs):
+        calls.append(cmd)
+        return FakeCompleted("" if len(calls) == 1 else "fallback answer")
+
+    monkeypatch.setattr(bridge.subprocess, "run", fake_run)
+
+    reply = bridge.run_hermes_raw("prompt", group_id=781423661)
+
+    assert reply == "fallback answer"
+    assert len(calls) == 2
+
+
+def test_run_hermes_skips_fallback_when_same_as_active_primary(monkeypatch):
+    bridge = load_bridge_module()
+    bridge.HERMES_BIN = "hermes"
+    bridge.HERMES_MODEL = "deepseekv4flash"
+    bridge.HERMES_PROVIDER = "官方"
+    bridge.HERMES_MODEL_BY_GROUP = {}
+    bridge.HERMES_PROVIDER_BY_GROUP = {}
+    bridge.HERMES_FALLBACK_ENABLED = True
+    bridge.HERMES_FALLBACK_MODEL = "deepseekv4flash"
+    bridge.HERMES_FALLBACK_PROVIDER = "官方"
+    bridge.HERMES_GROUP_SESSIONS_ENABLED = False
+    calls = []
+
+    class FakeCompleted:
+        returncode = 1
+        stdout = ""
+        stderr = "down"
+
+    def fake_run(cmd, **kwargs):
+        calls.append(cmd)
+        return FakeCompleted()
+
+    monkeypatch.setattr(bridge.subprocess, "run", fake_run)
+
+    result = bridge.run_hermes_raw_result("prompt", group_id=781423661)
+
+    assert result["ok"] is False
+    assert result["reason"] == "hermes_nonzero"
+    assert len(calls) == 1
