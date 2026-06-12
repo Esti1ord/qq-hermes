@@ -87,11 +87,21 @@ ONEBOT_HTTP_URL = os.getenv("ONEBOT_HTTP_URL", "http://127.0.0.1:3000").rstrip("
 ONEBOT_ACCESS_TOKEN = os.getenv("ONEBOT_ACCESS_TOKEN", "").strip()
 BRIDGE_INBOUND_TOKEN = os.getenv("BRIDGE_INBOUND_TOKEN", "").strip()
 HERMES_BIN = os.getenv("HERMES_BIN", "/home/roxy/.local/bin/hermes")
-HERMES_MODEL = _env_first("PRIMARY_CHAT_MODEL", "HERMES_MODEL")
-HERMES_PROVIDER = _env_first("PRIMARY_CHAT_MODEL_PROVIDER", "HERMES_PROVIDER")
+HERMES_MODEL = _env_first("PRIMARY_CHAT_MODEL", "HERMES_MODEL", default=config_utils.DEFAULT_PRIMARY_CHAT_MODEL)
+HERMES_PROVIDER = _env_first("PRIMARY_CHAT_MODEL_PROVIDER", "HERMES_PROVIDER", default=config_utils.DEFAULT_PRIMARY_CHAT_PROVIDER)
+HERMES_PROVIDER_BASE_URL = _env_first("PRIMARY_CHAT_MODEL_URL", "PRIMARY_CHAT_MODEL_BASE_URL", "HERMES_PROVIDER_BASE_URL")
+HERMES_API_KEY_ENV = _api_key_env_name(
+    explicit_names=("PRIMARY_CHAT_MODEL_API_KEY_ENV", "HERMES_API_KEY_ENV"),
+    raw_names=("PRIMARY_CHAT_MODEL_API_KEY", "PRIMARY_CHAT_MODEL_API", "HERMES_API_KEY"),
+)
 HERMES_FALLBACK_ENABLED = config_utils.parse_bool(os.getenv("HERMES_FALLBACK_ENABLED", "true"))
-HERMES_FALLBACK_MODEL = _env_first("VICE_CHAT_MODEL", "HERMES_FALLBACK_MODEL", default="deepseekv4flash")
-HERMES_FALLBACK_PROVIDER = _env_first("VICE_CHAT_MODEL_PROVIDER", "HERMES_FALLBACK_PROVIDER", default="官方")
+HERMES_FALLBACK_MODEL = _env_first("VICE_CHAT_MODEL", "HERMES_FALLBACK_MODEL", default=config_utils.DEFAULT_FALLBACK_CHAT_MODEL)
+HERMES_FALLBACK_PROVIDER = _env_first("VICE_CHAT_MODEL_PROVIDER", "HERMES_FALLBACK_PROVIDER", default=config_utils.DEFAULT_FALLBACK_CHAT_PROVIDER)
+HERMES_FALLBACK_PROVIDER_BASE_URL = _env_first("VICE_CHAT_MODEL_URL", "VICE_CHAT_MODEL_BASE_URL", "HERMES_FALLBACK_PROVIDER_BASE_URL")
+HERMES_FALLBACK_API_KEY_ENV = _api_key_env_name(
+    explicit_names=("VICE_CHAT_MODEL_API_KEY_ENV", "HERMES_FALLBACK_API_KEY_ENV"),
+    raw_names=("VICE_CHAT_MODEL_API_KEY", "VICE_CHAT_MODEL_API", "HERMES_FALLBACK_API_KEY"),
+)
 HERMES_MODEL_BY_GROUP = config_utils.parse_group_str_map(os.getenv("HERMES_MODEL_BY_GROUP", ""))
 HERMES_PROVIDER_BY_GROUP = config_utils.parse_group_str_map(os.getenv("HERMES_PROVIDER_BY_GROUP", ""))
 HERMES_GROUP_SESSIONS_ENABLED = os.getenv("HERMES_GROUP_SESSIONS_ENABLED", "true").lower() in {"1", "true", "yes"}
@@ -125,7 +135,7 @@ CONTEXT_PERSIST_ENABLED = os.getenv("CONTEXT_PERSIST_ENABLED", "false").lower() 
 CONTEXT_CACHE_FILE = Path(os.getenv("CONTEXT_CACHE_FILE", str(BASE_DIR / "logs" / "recent_context.jsonl")))
 OCR_ENABLED = config_utils.parse_bool(os.getenv("OCR_ENABLED", "false"))
 OCR_TRIGGER_MODE = os.getenv("OCR_TRIGGER_MODE", "direct_only").strip() or "direct_only"
-OCR_PROVIDER = _env_first("PRIMARY_OCR_MODEL_PROVIDER", "OCR_PROVIDER", default="hermes")
+OCR_PROVIDER = _env_first("PRIMARY_OCR_MODEL_PROVIDER", "IMAGE_MODEL_PROVIDER", "OCR_PROVIDER", default=config_utils.DEFAULT_PRIMARY_OCR_PROVIDER)
 OCR_EXTERNAL_PROVIDER_ALLOWED = config_utils.parse_bool(os.getenv("OCR_EXTERNAL_PROVIDER_ALLOWED", "false"))
 OCR_MAX_IMAGES_PER_MESSAGE = int(os.getenv("OCR_MAX_IMAGES_PER_MESSAGE", "2"))
 OCR_MAX_BYTES_PER_IMAGE = int(os.getenv("OCR_MAX_BYTES_PER_IMAGE", "6291456"))
@@ -138,15 +148,15 @@ OCR_INCLUDE_IN_CONTEXT = config_utils.parse_bool(os.getenv("OCR_INCLUDE_IN_CONTE
 OCR_PERSIST_TEXT_IN_CONTEXT = config_utils.parse_bool(os.getenv("OCR_PERSIST_TEXT_IN_CONTEXT", "false"))
 OCR_LOG_TEXT = config_utils.parse_bool(os.getenv("OCR_LOG_TEXT", "false"))
 OCR_LOG_IMAGE_URLS = config_utils.parse_bool(os.getenv("OCR_LOG_IMAGE_URLS", "false"))
-OCR_MODEL = _env_first("PRIMARY_OCR_MODEL", "OCR_MODEL")
-OCR_PROVIDER_BASE_URL = _env_first("PRIMARY_OCR_MODEL_URL", "PRIMARY_OCR_MODEL_BASE_URL", "OCR_PROVIDER_BASE_URL")
+OCR_MODEL = _env_first("PRIMARY_OCR_MODEL", "IMAGE_MODEL", "OCR_MODEL", default=config_utils.DEFAULT_PRIMARY_OCR_MODEL)
+OCR_PROVIDER_BASE_URL = _env_first("PRIMARY_OCR_MODEL_URL", "PRIMARY_OCR_MODEL_BASE_URL", "IMAGE_MODEL_URL", "IMAGE_MODEL_BASE_URL", "OCR_PROVIDER_BASE_URL")
 OCR_API_KEY_ENV = _api_key_env_name(
-    explicit_names=("PRIMARY_OCR_MODEL_API_KEY_ENV", "OCR_API_KEY_ENV"),
-    raw_names=("PRIMARY_OCR_MODEL_API_KEY", "PRIMARY_OCR_MODEL_API", "OCR_API_KEY"),
+    explicit_names=("PRIMARY_OCR_MODEL_API_KEY_ENV", "IMAGE_MODEL_API_KEY_ENV", "OCR_API_KEY_ENV"),
+    raw_names=("PRIMARY_OCR_MODEL_API_KEY", "PRIMARY_OCR_MODEL_API", "IMAGE_MODEL_API_KEY", "IMAGE_MODEL_API", "OCR_API_KEY"),
 )
 OCR_FALLBACK_ENABLED = config_utils.parse_bool(os.getenv("OCR_FALLBACK_ENABLED", "true"))
-OCR_FALLBACK_PROVIDER = _env_first("VICE_OCR_MODEL_PROVIDER", "OCR_FALLBACK_PROVIDER", default="model")
-OCR_FALLBACK_MODEL = _env_first("VICE_OCR_MODEL", "OCR_FALLBACK_MODEL", default="gpt-5.4")
+OCR_FALLBACK_PROVIDER = _env_first("VICE_OCR_MODEL_PROVIDER", "OCR_FALLBACK_PROVIDER", default=config_utils.DEFAULT_FALLBACK_OCR_PROVIDER)
+OCR_FALLBACK_MODEL = _env_first("VICE_OCR_MODEL", "OCR_FALLBACK_MODEL", default=config_utils.DEFAULT_FALLBACK_OCR_MODEL)
 OCR_FALLBACK_PROVIDER_BASE_URL = _env_first("VICE_OCR_MODEL_URL", "VICE_OCR_MODEL_BASE_URL", "OCR_FALLBACK_PROVIDER_BASE_URL")
 OCR_FALLBACK_API_KEY_ENV = _api_key_env_name(
     explicit_names=("VICE_OCR_MODEL_API_KEY_ENV", "OCR_FALLBACK_API_KEY_ENV"),
@@ -2295,8 +2305,118 @@ def run_proactive_reply(event: dict[str, Any], reasons: list[str]) -> str:
     return reply
 
 
-def _model_provider_key(model: str | None, provider: str | None) -> tuple[str, str]:
-    return (str(model or "").strip().lower(), str(provider or "").strip().lower())
+def _model_provider_key(model: str | None, provider: str | None, base_url: str | None = None, api_key_env: str | None = None) -> tuple[str, str, str, str]:
+    normalized_provider = str(hermes_runtime.normalize_provider_for_hermes(provider)).strip().lower()
+    if not hermes_runtime.provider_supports_direct_http(normalized_provider):
+        base_url = ""
+        api_key_env = ""
+    return (
+        str(model or "").strip().lower(),
+        normalized_provider,
+        str(base_url or "").strip(),
+        str(api_key_env or "").strip(),
+    )
+
+
+def text_model_http_config(
+    *,
+    model: str | None,
+    provider: str | None,
+    base_url: str | None,
+    api_key_env: str | None,
+) -> dict[str, str] | None:
+    clean_provider = str(provider or "").strip()
+    clean_base_url = str(base_url or "").strip()
+    clean_api_key_env = str(api_key_env or "").strip()
+    if not hermes_runtime.provider_supports_direct_http(clean_provider):
+        return None
+    if not clean_base_url or not clean_api_key_env:
+        return None
+    return {
+        "model": str(model or "").strip(),
+        "provider": clean_provider,
+        "base_url": clean_base_url,
+        "api_key_env": clean_api_key_env,
+    }
+
+
+def primary_text_http_config_for_group(group_id: int | None = None) -> dict[str, str] | None:
+    return text_model_http_config(
+        model=hermes_model_for_group(group_id),
+        provider=hermes_provider_for_group(group_id),
+        base_url=HERMES_PROVIDER_BASE_URL,
+        api_key_env=HERMES_API_KEY_ENV,
+    )
+
+
+def fallback_text_http_config() -> dict[str, str] | None:
+    return text_model_http_config(
+        model=HERMES_FALLBACK_MODEL,
+        provider=HERMES_FALLBACK_PROVIDER,
+        base_url=HERMES_FALLBACK_PROVIDER_BASE_URL,
+        api_key_env=HERMES_FALLBACK_API_KEY_ENV,
+    )
+
+
+def run_text_http_result(
+    prompt: str,
+    *,
+    config: dict[str, str],
+    group_id: int | None = None,
+    purpose: str = "unknown",
+    phase: str = "primary",
+) -> dict[str, Any]:
+    start = time.monotonic()
+    log({
+        "type": "text_http_start",
+        "purpose": purpose,
+        "group_id": group_id,
+        "phase": phase,
+        "has_model": bool(config.get("model")),
+        "has_provider": bool(config.get("provider")),
+        "has_base_url": bool(config.get("base_url")),
+        "has_api_key_env": bool(config.get("api_key_env")),
+    })
+    result = hermes_runtime.run_openai_compatible_chat_completion(
+        prompt,
+        base_url=config.get("base_url", ""),
+        model=config.get("model", ""),
+        api_key_env=config.get("api_key_env", ""),
+        timeout=HERMES_TIMEOUT,
+        max_reply_chars=MAX_REPLY_CHARS,
+    )
+    duration = runtime_stats.duration_ms(start)
+    ok = bool(result.get("ok") and str(result.get("text") or "").strip())
+    runtime_stat(
+        "hermes_call",
+        purpose=purpose,
+        group_id=group_id,
+        use_group_session=False,
+        duration_ms=duration,
+        ok=ok,
+        error="" if ok else str(result.get("reason") or "unknown"),
+        input_chars=len(prompt),
+        output_len=len(str(result.get("text") or "")),
+        timeout_s=HERMES_TIMEOUT,
+        model_configured=bool(config.get("model")),
+        provider_configured=bool(config.get("provider")),
+        transport="http",
+        phase=phase,
+    )
+    increment_runtime_counter("hermes_calls")
+    if not ok:
+        increment_runtime_counter("hermes_errors")
+    log({
+        "type": "text_http_result",
+        "purpose": purpose,
+        "group_id": group_id,
+        "phase": phase,
+        "ok": ok,
+        "reason": result.get("reason") or "",
+        "output_len": len(str(result.get("text") or "")),
+        "duration_ms": duration,
+    })
+    return result
 
 
 def hermes_fallback_available(group_id: int | None = None) -> bool:
@@ -2304,8 +2424,8 @@ def hermes_fallback_available(group_id: int | None = None) -> bool:
         return False
     if not (HERMES_FALLBACK_MODEL or HERMES_FALLBACK_PROVIDER):
         return False
-    active = _model_provider_key(hermes_model_for_group(group_id), hermes_provider_for_group(group_id))
-    fallback = _model_provider_key(HERMES_FALLBACK_MODEL, HERMES_FALLBACK_PROVIDER)
+    active = _model_provider_key(hermes_model_for_group(group_id), hermes_provider_for_group(group_id), HERMES_PROVIDER_BASE_URL, HERMES_API_KEY_ENV)
+    fallback = _model_provider_key(HERMES_FALLBACK_MODEL, HERMES_FALLBACK_PROVIDER, HERMES_FALLBACK_PROVIDER_BASE_URL, HERMES_FALLBACK_API_KEY_ENV)
     return fallback != active
 
 
@@ -2357,26 +2477,36 @@ def run_hermes_fallback_result(prompt: str, group_id: int | None = None, *, purp
         return None
     fallback_purpose = f"{purpose}_fallback" if purpose else "fallback"
     log({"type": "hermes_fallback_attempt", "group_id": group_id, "purpose": purpose, "primary_reason": primary_reason or "unknown"})
-    p = run_hermes_cmd(
-        build_hermes_cmd(
+    http_config = fallback_text_http_config()
+    if http_config is not None:
+        result = run_text_http_result(
             prompt,
+            config=http_config,
+            group_id=group_id,
+            purpose=fallback_purpose,
+            phase="fallback",
+        )
+    else:
+        p = run_hermes_cmd(
+            build_hermes_cmd(
+                prompt,
+                group_id=group_id,
+                use_group_session=False,
+                model=HERMES_FALLBACK_MODEL,
+                provider=HERMES_FALLBACK_PROVIDER,
+            ),
+            purpose=fallback_purpose,
             group_id=group_id,
             use_group_session=False,
-            model=HERMES_FALLBACK_MODEL,
-            provider=HERMES_FALLBACK_PROVIDER,
-        ),
-        purpose=fallback_purpose,
-        group_id=group_id,
-        use_group_session=False,
-        input_chars=len(prompt),
-    )
-    result = _hermes_raw_result_from_process(
-        p,
-        prompt=prompt,
-        group_id=group_id,
-        use_group_session=False,
-        allow_session_bootstrap=False,
-    )
+            input_chars=len(prompt),
+        )
+        result = _hermes_raw_result_from_process(
+            p,
+            prompt=prompt,
+            group_id=group_id,
+            use_group_session=False,
+            allow_session_bootstrap=False,
+        )
     log({
         "type": "hermes_fallback_result",
         "group_id": group_id,
@@ -2389,16 +2519,26 @@ def run_hermes_fallback_result(prompt: str, group_id: int | None = None, *, purp
 
 
 def run_hermes_raw_result(prompt: str, group_id: int | None = None, use_group_session: bool = True, purpose: str = "unknown") -> dict[str, Any]:
-    if use_group_session:
-        compact_group_hermes_session_if_needed(group_id)
-    p = run_hermes_cmd(build_hermes_cmd(prompt, group_id=group_id, use_group_session=use_group_session), purpose=purpose, group_id=group_id, use_group_session=use_group_session, input_chars=len(prompt))
-    primary = _hermes_raw_result_from_process(
-        p,
-        prompt=prompt,
-        group_id=group_id,
-        use_group_session=use_group_session,
-        allow_session_bootstrap=True,
-    )
+    http_config = primary_text_http_config_for_group(group_id)
+    if http_config is not None:
+        primary = run_text_http_result(
+            prompt,
+            config=http_config,
+            group_id=group_id,
+            purpose=purpose,
+            phase="primary",
+        )
+    else:
+        if use_group_session:
+            compact_group_hermes_session_if_needed(group_id)
+        p = run_hermes_cmd(build_hermes_cmd(prompt, group_id=group_id, use_group_session=use_group_session), purpose=purpose, group_id=group_id, use_group_session=use_group_session, input_chars=len(prompt))
+        primary = _hermes_raw_result_from_process(
+            p,
+            prompt=prompt,
+            group_id=group_id,
+            use_group_session=use_group_session,
+            allow_session_bootstrap=True,
+        )
     if _hermes_result_needs_fallback(primary):
         fallback = run_hermes_fallback_result(prompt, group_id, purpose=purpose, primary_reason=str(primary.get("reason") or "unknown"))
         if fallback is not None:

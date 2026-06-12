@@ -80,13 +80,21 @@ def test_load_config_disables_punctuation_style_by_default(tmp_path, monkeypatch
 def test_load_config_prefers_primary_and_vice_aliases_over_legacy_envs(tmp_path, monkeypatch):
     monkeypatch.setenv("GROUP_IDS", "975805598")
     monkeypatch.setenv("PRIMARY_CHAT_MODEL", "alias-primary-text")
-    monkeypatch.setenv("PRIMARY_CHAT_MODEL_PROVIDER", "deepseek")
+    monkeypatch.setenv("PRIMARY_CHAT_MODEL_PROVIDER", "custom")
+    monkeypatch.setenv("PRIMARY_CHAT_MODEL_BASE_URL", "https://chat.example.test/v1")
+    monkeypatch.setenv("PRIMARY_CHAT_MODEL_API", "dummy-primary-chat-value")
     monkeypatch.setenv("VICE_CHAT_MODEL", "alias-fallback-text")
-    monkeypatch.setenv("VICE_CHAT_MODEL_PROVIDER", "openai-gpt")
+    monkeypatch.setenv("VICE_CHAT_MODEL_PROVIDER", "deepseek")
+    monkeypatch.setenv("VICE_CHAT_MODEL_URL", "https://fallback-chat.example.test/v1")
+    monkeypatch.setenv("VICE_CHAT_MODEL_API", "dummy-fallback-chat-value")
     monkeypatch.setenv("HERMES_MODEL", "legacy-primary-text")
     monkeypatch.setenv("HERMES_PROVIDER", "legacy-primary-provider")
+    monkeypatch.setenv("HERMES_PROVIDER_BASE_URL", "https://legacy-chat.example.test/v1")
+    monkeypatch.setenv("HERMES_API_KEY_ENV", "LEGACY_CHAT_KEY")
     monkeypatch.setenv("HERMES_FALLBACK_MODEL", "legacy-fallback-text")
     monkeypatch.setenv("HERMES_FALLBACK_PROVIDER", "legacy-fallback-provider")
+    monkeypatch.setenv("HERMES_FALLBACK_PROVIDER_BASE_URL", "https://legacy-fallback-chat.example.test/v1")
+    monkeypatch.setenv("HERMES_FALLBACK_API_KEY_ENV", "LEGACY_FALLBACK_CHAT_KEY")
     monkeypatch.setenv("PRIMARY_OCR_MODEL_PROVIDER", "custom")
     monkeypatch.setenv("PRIMARY_OCR_MODEL", "alias-primary-vision")
     monkeypatch.setenv("PRIMARY_OCR_MODEL_URL", "https://api.example.test/v1")
@@ -107,9 +115,13 @@ def test_load_config_prefers_primary_and_vice_aliases_over_legacy_envs(tmp_path,
     loaded = bridge_config.load_config(tmp_path)
 
     assert loaded.hermes_model == "alias-primary-text"
-    assert loaded.hermes_provider == "deepseek"
+    assert loaded.hermes_provider == "custom"
+    assert loaded.hermes_provider_base_url == "https://chat.example.test/v1"
+    assert loaded.hermes_api_key_env == "PRIMARY_CHAT_MODEL_API"
     assert loaded.hermes_fallback_model == "alias-fallback-text"
-    assert loaded.hermes_fallback_provider == "openai-gpt"
+    assert loaded.hermes_fallback_provider == "deepseek"
+    assert loaded.hermes_fallback_provider_base_url == "https://fallback-chat.example.test/v1"
+    assert loaded.hermes_fallback_api_key_env == "VICE_CHAT_MODEL_API"
     assert loaded.ocr_provider == "custom"
     assert loaded.ocr_model == "alias-primary-vision"
     assert loaded.ocr_provider_base_url == "https://api.example.test/v1"
@@ -118,6 +130,35 @@ def test_load_config_prefers_primary_and_vice_aliases_over_legacy_envs(tmp_path,
     assert loaded.ocr_fallback_model == "alias-fallback-vision"
     assert loaded.ocr_fallback_provider_base_url == "https://fallback.example.test/v1"
     assert loaded.ocr_fallback_api_key_env == "VICE_OCR_MODEL_API"
+
+
+def test_load_config_supports_local_image_model_aliases_for_primary_ocr(tmp_path, monkeypatch):
+    monkeypatch.setenv("GROUP_IDS", "975805598")
+    monkeypatch.delenv("PRIMARY_OCR_MODEL_PROVIDER", raising=False)
+    monkeypatch.delenv("PRIMARY_OCR_MODEL", raising=False)
+    monkeypatch.delenv("PRIMARY_OCR_MODEL_URL", raising=False)
+    monkeypatch.delenv("PRIMARY_OCR_MODEL_BASE_URL", raising=False)
+    monkeypatch.delenv("PRIMARY_OCR_MODEL_API_KEY_ENV", raising=False)
+    monkeypatch.delenv("PRIMARY_OCR_MODEL_API_KEY", raising=False)
+    monkeypatch.delenv("PRIMARY_OCR_MODEL_API", raising=False)
+    monkeypatch.setenv("IMAGE_MODEL_PROVIDER", "custom")
+    monkeypatch.setenv("IMAGE_MODEL", "local-mimo")
+    monkeypatch.setenv("IMAGE_MODEL_BASE_URL", "https://image.example.test/v1")
+    monkeypatch.setenv("IMAGE_MODEL_API", "dummy-image-value")
+    monkeypatch.setenv("IMAGE_MODEL_API_KEY", "")
+    monkeypatch.setenv("IMAGE_MODEL_API_KEY_ENV", "")
+    monkeypatch.setenv("OCR_API_KEY", "")
+    monkeypatch.setenv("OCR_PROVIDER", "legacy-ocr-provider")
+    monkeypatch.setenv("OCR_MODEL", "legacy-ocr-model")
+    monkeypatch.setenv("OCR_PROVIDER_BASE_URL", "https://legacy.example.test/v1")
+    monkeypatch.setenv("OCR_API_KEY_ENV", "LEGACY_VISION_KEY")
+
+    loaded = bridge_config.load_config(tmp_path)
+
+    assert loaded.ocr_provider == "custom"
+    assert loaded.ocr_model == "local-mimo"
+    assert loaded.ocr_provider_base_url == "https://image.example.test/v1"
+    assert loaded.ocr_api_key_env == "IMAGE_MODEL_API"
 
 
 def test_load_dotenv_sets_missing_values_without_overwriting_existing(tmp_path, monkeypatch):
@@ -137,11 +178,47 @@ def test_load_dotenv_sets_missing_values_without_overwriting_existing(tmp_path, 
 def test_load_config_includes_text_and_ocr_fallback_defaults(tmp_path, monkeypatch):
     monkeypatch.setenv("GROUP_IDS", "975805598")
     for name in (
+        "PRIMARY_CHAT_MODEL",
+        "PRIMARY_CHAT_MODEL_PROVIDER",
+        "PRIMARY_CHAT_MODEL_BASE_URL",
+        "PRIMARY_CHAT_MODEL_URL",
+        "PRIMARY_CHAT_MODEL_API_KEY_ENV",
+        "PRIMARY_CHAT_MODEL_API_KEY",
+        "PRIMARY_CHAT_MODEL_API",
+        "HERMES_MODEL",
+        "HERMES_PROVIDER",
+        "HERMES_PROVIDER_BASE_URL",
+        "HERMES_API_KEY_ENV",
         "HERMES_FALLBACK_ENABLED",
         "VICE_CHAT_MODEL",
         "VICE_CHAT_MODEL_PROVIDER",
+        "VICE_CHAT_MODEL_BASE_URL",
+        "VICE_CHAT_MODEL_URL",
+        "VICE_CHAT_MODEL_API_KEY_ENV",
+        "VICE_CHAT_MODEL_API_KEY",
+        "VICE_CHAT_MODEL_API",
         "HERMES_FALLBACK_MODEL",
         "HERMES_FALLBACK_PROVIDER",
+        "HERMES_FALLBACK_PROVIDER_BASE_URL",
+        "HERMES_FALLBACK_API_KEY_ENV",
+        "PRIMARY_OCR_MODEL_PROVIDER",
+        "PRIMARY_OCR_MODEL",
+        "PRIMARY_OCR_MODEL_BASE_URL",
+        "PRIMARY_OCR_MODEL_URL",
+        "PRIMARY_OCR_MODEL_API_KEY_ENV",
+        "PRIMARY_OCR_MODEL_API_KEY",
+        "PRIMARY_OCR_MODEL_API",
+        "IMAGE_MODEL_PROVIDER",
+        "IMAGE_MODEL",
+        "IMAGE_MODEL_BASE_URL",
+        "IMAGE_MODEL_URL",
+        "IMAGE_MODEL_API_KEY_ENV",
+        "IMAGE_MODEL_API_KEY",
+        "IMAGE_MODEL_API",
+        "OCR_PROVIDER",
+        "OCR_MODEL",
+        "OCR_PROVIDER_BASE_URL",
+        "OCR_API_KEY_ENV",
         "OCR_FALLBACK_ENABLED",
         "VICE_OCR_MODEL_PROVIDER",
         "VICE_OCR_MODEL",
@@ -159,11 +236,15 @@ def test_load_config_includes_text_and_ocr_fallback_defaults(tmp_path, monkeypat
 
     loaded = bridge_config.load_config(tmp_path)
 
+    assert loaded.hermes_model == "deepseekv4flash"
+    assert loaded.hermes_provider == "custom"
     assert loaded.hermes_fallback_enabled is True
     assert loaded.hermes_fallback_model == "deepseekv4flash"
-    assert loaded.hermes_fallback_provider == "官方"
+    assert loaded.hermes_fallback_provider == "deepseek"
+    assert loaded.ocr_provider == "custom"
+    assert loaded.ocr_model == "mimo"
     assert loaded.ocr_fallback_enabled is True
-    assert loaded.ocr_fallback_provider == "model"
+    assert loaded.ocr_fallback_provider == "custom"
     assert loaded.ocr_fallback_model == "gpt-5.4"
     assert loaded.ocr_fallback_provider_base_url == ""
     assert loaded.ocr_fallback_api_key_env == ""

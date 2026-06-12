@@ -5,6 +5,15 @@ import os
 import re
 from pathlib import Path
 
+DEFAULT_PRIMARY_CHAT_MODEL = "deepseekv4flash"
+DEFAULT_PRIMARY_CHAT_PROVIDER = "custom"
+DEFAULT_FALLBACK_CHAT_MODEL = "deepseekv4flash"
+DEFAULT_FALLBACK_CHAT_PROVIDER = "deepseek"
+DEFAULT_PRIMARY_OCR_PROVIDER = "custom"
+DEFAULT_PRIMARY_OCR_MODEL = "mimo"
+DEFAULT_FALLBACK_OCR_PROVIDER = "custom"
+DEFAULT_FALLBACK_OCR_MODEL = "gpt-5.4"
+
 
 def parse_bool(value: str, *, true_values: set[str] | None = None) -> bool:
     values = true_values or {"1", "true", "yes"}
