@@ -3401,9 +3401,19 @@ def build_admin_state(group_id: int | None = None) -> dict[str, Any]:
     ocr_fallback = admin_view.safe_model_provider_details(OCR_FALLBACK_MODEL, OCR_FALLBACK_PROVIDER)
     queue_total = sum(int((group.get("queues") or {}).get("total") or 0) for group in group_states)
     active_worker_count = sum(1 for task in _reply_workers_by_group.values() if task is not None and not task.done())
+    prompt_composition = admin_view.build_context_composition_overview(
+        group_id=selected_group_id,
+        context_stats=selected_context_stats,
+        max_prompt_chars=MAX_PROMPT_CHARS,
+        ocr_enabled=OCR_ENABLED,
+        self_learning_enabled=SELF_LEARNING_ENABLED and SELF_LEARNING_INJECT_ENABLED,
+    )
+    active_ocr_inflight_count = sum(1 for task in _ocr_inflight.values() if task is not None and not task.done())
+    active_ocr_context_tasks = sum(1 for task in _ocr_context_tasks if task is not None and not task.done())
     return {
         "ok": True,
         "generated_at": datetime.fromtimestamp(now).isoformat(timespec="seconds"),
+        "selected_group_id": selected_group_id,
         "runtime": {
             "status": "running",
             "pid": os.getpid(),
@@ -3444,6 +3454,13 @@ def build_admin_state(group_id: int | None = None) -> dict[str, Any]:
             "include_in_prompt": OCR_INCLUDE_IN_PROMPT,
             "include_in_context": OCR_INCLUDE_IN_CONTEXT,
             "persist_text_in_context": OCR_PERSIST_TEXT_IN_CONTEXT,
+            "status": {
+                "inflight_count": active_ocr_inflight_count,
+                "context_task_count": active_ocr_context_tasks,
+                "cache_entries": len(_ocr_result_cache),
+                "cache_max_entries": OCR_CACHE_MAX_ENTRIES,
+                "max_concurrent_tasks": OCR_MAX_CONCURRENT_TASKS,
+            },
             "fallback": {
                 **ocr_fallback,
                 "enabled": OCR_FALLBACK_ENABLED,
@@ -3458,13 +3475,8 @@ def build_admin_state(group_id: int | None = None) -> dict[str, Any]:
             "max_reply_chars": MAX_REPLY_CHARS,
         },
         "groups": group_states,
-        "context_composition": admin_view.build_context_composition_overview(
-            group_id=selected_group_id,
-            context_stats=selected_context_stats,
-            max_prompt_chars=MAX_PROMPT_CHARS,
-            ocr_enabled=OCR_ENABLED,
-            self_learning_enabled=SELF_LEARNING_ENABLED and SELF_LEARNING_INJECT_ENABLED,
-        ),
+        "context_composition": prompt_composition,
+        "prompt_composition": prompt_composition,
         "safety": {
             "raw_chat_hidden": True,
             "prompt_text_hidden": True,

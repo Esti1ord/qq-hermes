@@ -29,7 +29,9 @@ _SENSITIVE_MARKERS = (
     "apikey",
 )
 _SECRET_TOKEN_RE = re.compile(r"(?i)\b(sk|pk|ghp|xox[baprs]?)-[a-z0-9_-]{8,}")
-_URLISH_RE = re.compile(r"(?i)\b[a-z0-9.-]+\.[a-z]{2,}(?:/|:)")
+_URLISH_RE = re.compile(r"(?i)\b(?:[a-z0-9-]+\.)+[a-z]{2,}(?::\d+|/|\b)")
+_HOST_PORT_RE = re.compile(r"(?i)\b(?:localhost|(?:\d{1,3}\.){3}\d{1,3}|\[[0-9a-f:]+\])(?::\d+|/|\b)")
+_ENV_SECRET_NAME_RE = re.compile(r"\b[A-Z][A-Z0-9_]*(?:_(?:API|KEY|TOKEN|SECRET|COOKIE))(?:_[A-Z0-9]+)*\b")
 _ABSOLUTE_PATH_RE = re.compile(r"^(?:/|~[/\\]|[a-zA-Z]:[/\\])")
 
 _SECTION_SUMMARIES = {
@@ -60,7 +62,7 @@ def safe_display_value(value: Any, *, max_chars: int = 80) -> str:
     lower = text.lower()
     if any(marker in lower for marker in _SENSITIVE_MARKERS):
         return REDACTED
-    if _SECRET_TOKEN_RE.search(text) or _URLISH_RE.search(text):
+    if _SECRET_TOKEN_RE.search(text) or _URLISH_RE.search(text) or _HOST_PORT_RE.search(text) or _ENV_SECRET_NAME_RE.search(text):
         return REDACTED
     if _ABSOLUTE_PATH_RE.search(text):
         return REDACTED
@@ -303,55 +305,99 @@ def build_context_composition_overview(
 def build_admin_html() -> str:
     """Return a dependency-free admin page that renders /admin/state safely."""
     return """<!doctype html>
-<html lang=\"zh-CN\">
+<html lang="zh-CN">
 <head>
-  <meta charset=\"utf-8\">
-  <meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>QQ Hermes 本地状态</title>
   <style>
-    :root { color-scheme: light dark; font-family: system-ui, -apple-system, BlinkMacSystemFont, \"Segoe UI\", sans-serif; }
+    :root { color-scheme: light dark; font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
     body { margin: 0; background: #0f172a; color: #e2e8f0; }
     header { padding: 24px; background: linear-gradient(135deg, #1e293b, #111827); border-bottom: 1px solid #334155; }
     h1 { margin: 0 0 8px; font-size: 24px; }
     h2 { margin: 0 0 12px; font-size: 18px; }
+    h3 { margin: 14px 0 8px; font-size: 16px; }
     p { margin: 4px 0; color: #94a3b8; }
-    button { margin-top: 12px; padding: 8px 12px; border: 1px solid #475569; border-radius: 8px; background: #1e293b; color: #e2e8f0; cursor: pointer; }
+    button, select { padding: 8px 12px; border: 1px solid #475569; border-radius: 8px; background: #1e293b; color: #e2e8f0; }
+    button { cursor: pointer; }
     button:hover { background: #334155; }
+    label { color: #cbd5e1; font-weight: 600; }
     main { padding: 16px; display: grid; gap: 16px; grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); }
     section { border: 1px solid #334155; border-radius: 12px; padding: 16px; background: #111827; box-shadow: 0 10px 30px rgba(0, 0, 0, .18); }
-    dl { display: grid; grid-template-columns: minmax(120px, 42%) 1fr; gap: 8px 12px; margin: 0; }
+    dl { display: grid; grid-template-columns: minmax(130px, 42%) 1fr; gap: 8px 12px; margin: 0; }
     dt { color: #94a3b8; }
     dd { margin: 0; overflow-wrap: anywhere; }
     table { width: 100%; border-collapse: collapse; font-size: 14px; }
     th, td { border-bottom: 1px solid #334155; padding: 8px 6px; text-align: left; vertical-align: top; }
     th { color: #cbd5e1; font-weight: 600; }
+    pre { margin: 0; max-height: 520px; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; color: #cbd5e1; }
+    code, pre { background: #020617; border: 1px solid #334155; border-radius: 8px; padding: 10px; }
+    .toolbar { display: flex; flex-wrap: wrap; align-items: center; gap: 10px 12px; margin-top: 14px; }
+    .status-grid, .metric-grid { display: grid; gap: 10px; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); margin-top: 14px; }
+    .status-pill, .metric-card { border: 1px solid #334155; border-radius: 10px; background: #0b1220; padding: 12px; }
+    .status-pill span, .metric-label { display: block; color: #94a3b8; font-size: 12px; margin-bottom: 4px; }
+    .status-pill strong, .metric-value { display: block; font-size: 20px; font-weight: 700; overflow-wrap: anywhere; }
+    .metric-desc { margin-top: 6px; font-size: 12px; color: #94a3b8; }
+    .delta { display: inline-block; margin-top: 6px; font-size: 12px; }
+    .delta.up { color: #86efac; }
+    .delta.down { color: #fca5a5; }
+    .delta.flat { color: #94a3b8; }
     .muted { color: #94a3b8; }
     .ok { color: #86efac; }
     .warn { color: #fcd34d; }
+    .error-box { margin-top: 12px; padding: 10px; border: 1px solid #92400e; border-radius: 8px; background: #451a03; color: #fed7aa; white-space: pre-wrap; overflow-wrap: anywhere; }
+    .hidden { display: none; }
     .full { grid-column: 1 / -1; }
-    .section-card { border-top: 1px solid #334155; padding-top: 10px; margin-top: 10px; }
-    code { background: #020617; border: 1px solid #334155; border-radius: 4px; padding: 1px 4px; }
+    .composition-summary { display: grid; gap: 8px; grid-template-columns: repeat(auto-fit, minmax(190px, 1fr)); margin: 10px 0 14px; }
+    .summary-chip { border: 1px solid #334155; border-radius: 8px; background: #0b1220; padding: 10px; }
+    .summary-chip span { display: block; color: #94a3b8; font-size: 12px; }
+    .summary-chip strong { display: block; margin-top: 2px; }
   </style>
 </head>
 <body>
   <header>
     <h1>QQ Hermes 本地数据查看</h1>
-    <p>实时查看运行状态、当前模型路由，以及模型输入上下文组成概览。</p>
+    <p>实时查看运行状态、当前模型路由，以及输入给机器人的提示词组成概览。</p>
     <p>安全策略：本页不展示原始聊天、完整 prompt、模型输出、OCR 文本、Provider URL、Token/Cookie 或本地密钥路径。</p>
-    <button id=\"refresh\" type=\"button\">立即刷新</button>
-    <span id=\"status\" class=\"muted\"></span>
+    <div class="toolbar">
+      <button id="refresh" type="button">立即刷新</button>
+      <label for="group-select">查看群</label>
+      <select id="group-select" aria-label="选择群"><option value="">加载中…</option></select>
+      <span id="status" class="muted" aria-live="polite"></span>
+    </div>
+    <div class="status-grid" aria-label="实时连接状态">
+      <div class="status-pill"><span>连接状态</span><strong id="connection-state">初始化</strong></div>
+      <div class="status-pill"><span>最近成功刷新</span><strong id="last-success">尚未成功</strong></div>
+      <div class="status-pill"><span>成功刷新次数</span><strong id="refresh-count">0</strong></div>
+      <div class="status-pill"><span>当前查看群</span><strong id="selected-group-label">（待加载）</strong></div>
+    </div>
   </header>
   <main>
-    <section><h2>运行状态</h2><div id=\"runtime\"></div></section>
-    <section><h2>模型 / Provider</h2><div id=\"model\"></div></section>
-    <section><h2>OCR / 媒体</h2><div id=\"ocr\"></div></section>
-    <section class=\"full\"><h2>群状态</h2><div id=\"groups\"></div></section>
-    <section class=\"full\"><h2>模型输入上下文组成</h2><div id=\"composition\"></div></section>
+    <section><h2>实时连接状态</h2><div id="connection"></div><div id="error-details" class="error-box hidden" role="alert"></div></section>
+    <section><h2>运行状态</h2><div id="runtime"></div></section>
+    <section><h2>模型 / Provider</h2><div id="model"></div></section>
+    <section><h2>OCR / 媒体</h2><div id="ocr"></div></section>
+    <section class="full"><h2>指标趋势</h2><div id="metrics" class="metric-grid"></div></section>
+    <section class="full"><h2>群状态</h2><div id="groups"></div></section>
+    <section class="full"><h2>输入给机器人的提示词组成概览</h2><div id="composition"></div></section>
+    <section class="full"><h2>当前 /admin/state JSON（只读）</h2><pre id="state-json" aria-label="content-safe admin state json">等待首次刷新…</pre></section>
   </main>
 <script>
 const $ = (id) => document.getElementById(id);
+const REFRESH_INTERVAL_MS = 5000;
+let selectedGroupId = null;
+let lastSuccessfulRefreshAt = null;
+let successRefreshCount = 0;
+let connectionState = '初始化';
+let lastErrorDetail = '';
+let previousMetricValues = null;
+
 function clear(node) { while (node.firstChild) node.removeChild(node.firstChild); }
 function text(value) { return value === null || value === undefined || value === '' ? '（空）' : String(value); }
+function numberValue(value) {
+  const num = Number(value || 0);
+  return Number.isFinite(num) ? num : 0;
+}
 function addKV(dl, key, value) {
   const dt = document.createElement('dt');
   const dd = document.createElement('dd');
@@ -364,6 +410,77 @@ function renderKV(target, rows) {
   const dl = document.createElement('dl');
   rows.forEach(([key, value]) => addKV(dl, key, value));
   target.appendChild(dl);
+}
+function formatLocalTime(date) {
+  return date ? date.toLocaleString('zh-CN', { hour12: false }) : '尚未成功';
+}
+function selectedGroupFromState(state) {
+  if (state && state.selected_group_id !== undefined && state.selected_group_id !== null) return state.selected_group_id;
+  const comp = (state && (state.prompt_composition || state.context_composition)) || {};
+  return comp.selected_group_id;
+}
+function stateUrl() {
+  const params = new URLSearchParams();
+  if (selectedGroupId !== null && selectedGroupId !== undefined && selectedGroupId !== '') {
+    params.set('group_id', String(selectedGroupId));
+  }
+  const query = params.toString();
+  return query ? `/admin/state?${query}` : '/admin/state';
+}
+function updateConnectionDisplays() {
+  const selectedLabel = selectedGroupId === null || selectedGroupId === undefined ? '默认目标群' : String(selectedGroupId);
+  $('connection-state').textContent = connectionState;
+  $('last-success').textContent = formatLocalTime(lastSuccessfulRefreshAt);
+  $('refresh-count').textContent = String(successRefreshCount);
+  $('selected-group-label').textContent = selectedLabel;
+  renderKV($('connection'), [
+    ['连接状态', connectionState],
+    ['最近成功刷新', formatLocalTime(lastSuccessfulRefreshAt)],
+    ['成功刷新次数', successRefreshCount],
+    ['当前查看群', selectedLabel],
+    ['轮询间隔', `${REFRESH_INTERVAL_MS / 1000} 秒`],
+  ]);
+  const errorBox = $('error-details');
+  if (lastErrorDetail) {
+    errorBox.textContent = lastErrorDetail;
+    errorBox.className = 'error-box';
+  } else {
+    errorBox.textContent = '';
+    errorBox.className = 'error-box hidden';
+  }
+}
+function populateGroupSelector(state) {
+  const selector = $('group-select');
+  const groups = Array.isArray(state.groups) ? state.groups : [];
+  const stateSelected = selectedGroupFromState(state);
+  if (selectedGroupId === null && stateSelected !== undefined && stateSelected !== null && stateSelected !== '') {
+    selectedGroupId = stateSelected;
+  }
+  const desired = selectedGroupId === null || selectedGroupId === undefined ? '' : String(selectedGroupId);
+  const optionValues = groups.map((group) => String(group.group_id));
+  clear(selector);
+  if (!groups.length) {
+    const option = document.createElement('option');
+    option.value = '';
+    option.textContent = '无可用群';
+    selector.appendChild(option);
+    selector.value = '';
+    return;
+  }
+  groups.forEach((group) => {
+    const value = String(group.group_id);
+    const option = document.createElement('option');
+    option.value = value;
+    option.textContent = `${value}${group.is_target_group ? '（目标）' : ''}${group.allowed ? '' : '（未允许）'}`;
+    selector.appendChild(option);
+  });
+  if (desired && optionValues.includes(desired)) {
+    selector.value = desired;
+  } else {
+    selector.value = optionValues[0];
+    selectedGroupId = groups[0].group_id;
+  }
+  updateConnectionDisplays();
 }
 function renderRuntime(state) {
   const rt = state.runtime || {};
@@ -384,12 +501,13 @@ function renderRuntime(state) {
 function renderModel(state) {
   const routing = state.model_routing || {};
   const primary = routing.primary || {};
+  const selected = routing.selected_group || {};
   const fallback = routing.fallback || {};
   renderKV($('model'), [
     ['主模型', primary.model],
     ['主 Provider', primary.provider],
-    ['主模型已配置', primary.model_configured],
-    ['主 Provider 已配置', primary.provider_configured],
+    ['当前群模型', selected.model],
+    ['当前群 Provider', selected.provider],
     ['按群模型覆盖数', routing.group_model_override_count],
     ['按群 Provider 覆盖数', routing.group_provider_override_count],
     ['群会话启用', routing.group_sessions_enabled],
@@ -403,6 +521,7 @@ function renderModel(state) {
 function renderOcr(state) {
   const ocr = state.ocr || {};
   const fallback = ocr.fallback || {};
+  const status = ocr.status || {};
   renderKV($('ocr'), [
     ['OCR 启用', ocr.enabled],
     ['外部 Provider 允许', ocr.external_provider_allowed],
@@ -410,10 +529,72 @@ function renderOcr(state) {
     ['模型', ocr.model],
     ['结果进入 prompt', ocr.include_in_prompt],
     ['结果进入上下文', ocr.include_in_context],
+    ['OCR inflight', status.inflight_count],
+    ['OCR 上下文任务', status.context_task_count],
+    ['OCR 缓存条目', `${status.cache_entries || 0} / ${status.cache_max_entries || 0}`],
     ['Fallback 启用', fallback.enabled],
     ['Fallback Provider', fallback.provider],
     ['Fallback 模型', fallback.model],
   ]);
+}
+function metricRows(state) {
+  const rt = state.runtime || {};
+  const pending = rt.pending || {};
+  const counters = rt.counters || {};
+  const ocr = state.ocr || {};
+  const ocrStatus = ocr.status || {};
+  const replySuccess = numberValue(counters.direct_replies_sent) + numberValue(counters.proactive_replies_sent) + numberValue(counters.command_success);
+  const replyErrors = numberValue(counters.direct_send_errors) + numberValue(counters.direct_generation_failures) + numberValue(counters.send_errors) + numberValue(counters.command_errors) + numberValue(counters.hermes_errors);
+  return [
+    { key: 'queue_total', label: '队列总数', value: numberValue(pending.queue_total), desc: 'direct + proactive 待处理' },
+    { key: 'active_worker_count', label: '活跃 worker', value: numberValue(pending.active_worker_count), desc: '正在运行的回复 worker' },
+    { key: 'direct_inflight_count', label: 'Direct inflight', value: numberValue(pending.direct_inflight_count), desc: '直接回复生成中' },
+    { key: 'proactive_inflight_count', label: 'Proactive inflight', value: numberValue(pending.proactive_inflight_count), desc: '主动发言生成中' },
+    { key: 'reply_success_total', label: '回复成功计数', value: replySuccess, desc: 'direct / proactive / command 成功' },
+    { key: 'reply_error_total', label: '回复错误计数', value: replyErrors, desc: '发送、生成、命令和 Hermes 错误' },
+    { key: 'events_total', label: '事件总数', value: numberValue(counters.events_total), desc: '收到的 OneBot 事件计数' },
+    { key: 'ignored_total', label: '忽略计数', value: numberValue(counters.ignored_total), desc: '未进入回复流程的事件' },
+    { key: 'ocr_enabled', label: 'OCR 状态', value: ocr.enabled ? '启用' : '关闭', desc: '当前 OCR 配置状态', trend: false },
+    { key: 'ocr_inflight_count', label: 'OCR inflight', value: numberValue(ocrStatus.inflight_count), desc: '正在识别的图片任务' },
+    { key: 'ocr_context_task_count', label: 'OCR 上下文任务', value: numberValue(ocrStatus.context_task_count), desc: '后台上下文识别任务' },
+    { key: 'ocr_cache_entries', label: 'OCR 缓存条目', value: numberValue(ocrStatus.cache_entries), desc: '短期图片识别缓存' },
+  ];
+}
+function renderMetricDelta(card, item) {
+  const delta = document.createElement('span');
+  delta.className = 'delta flat';
+  if (item.trend === false || typeof item.value !== 'number') {
+    delta.textContent = '趋势：不适用';
+  } else if (!previousMetricValues || previousMetricValues[item.key] === undefined) {
+    delta.textContent = '趋势：本次为基线';
+  } else {
+    const diff = item.value - Number(previousMetricValues[item.key] || 0);
+    delta.textContent = `Δ ${diff > 0 ? '+' : ''}${diff}`;
+    delta.className = `delta ${diff > 0 ? 'up' : diff < 0 ? 'down' : 'flat'}`;
+  }
+  card.appendChild(delta);
+}
+function renderMetrics(state) {
+  const target = $('metrics');
+  clear(target);
+  const rows = metricRows(state);
+  rows.forEach((item) => {
+    const card = document.createElement('div');
+    card.className = 'metric-card';
+    const label = document.createElement('span');
+    label.className = 'metric-label';
+    label.textContent = item.label;
+    const value = document.createElement('strong');
+    value.className = 'metric-value';
+    value.textContent = text(item.value);
+    const desc = document.createElement('div');
+    desc.className = 'metric-desc';
+    desc.textContent = item.desc;
+    card.append(label, value, desc);
+    renderMetricDelta(card, item);
+    target.appendChild(card);
+  });
+  previousMetricValues = Object.fromEntries(rows.filter((item) => typeof item.value === 'number').map((item) => [item.key, item.value]));
 }
 function renderGroups(state) {
   const target = $('groups');
@@ -442,57 +623,110 @@ function renderGroups(state) {
   });
   target.appendChild(table);
 }
-function sectionBlock(section) {
-  const wrap = document.createElement('div');
-  wrap.className = 'section-card';
-  const title = document.createElement('div');
-  title.textContent = `${section.title} (${section.key})`;
-  const meta = document.createElement('p');
-  meta.textContent = `来源 ${section.source} / 优先级 ${section.priority} / 预算 ${section.budget_chars === null ? '不限' : section.budget_chars}`;
-  const summary = document.createElement('p');
-  summary.textContent = section.summary;
-  wrap.append(title, meta, summary);
-  return wrap;
+function addSummaryChip(parent, label, value) {
+  const chip = document.createElement('div');
+  chip.className = 'summary-chip';
+  const span = document.createElement('span');
+  span.textContent = label;
+  const strong = document.createElement('strong');
+  strong.textContent = text(value);
+  chip.append(span, strong);
+  parent.appendChild(chip);
 }
 function renderCompositionKind(parent, label, data) {
   const h = document.createElement('h3');
-  h.textContent = `${label}：${data.section_count || 0} 个 section，${data.rules_count || 0} 条规则`;
+  h.textContent = label;
   parent.appendChild(h);
-  (data.sections || []).forEach((section) => parent.appendChild(sectionBlock(section)));
+  const summary = document.createElement('div');
+  summary.className = 'composition-summary';
+  addSummaryChip(summary, 'section 数量', data.section_count || 0);
+  addSummaryChip(summary, '规则数量', data.rules_count || 0);
+  addSummaryChip(summary, 'prompt 上限', data.max_prompt_chars === null || data.max_prompt_chars === undefined ? '不适用' : data.max_prompt_chars);
+  addSummaryChip(summary, '输出约定', data.output_contract || '（空）');
+  parent.appendChild(summary);
+  const table = document.createElement('table');
+  const head = document.createElement('tr');
+  ['section', 'key', 'source / priority', 'budget', '简述'].forEach((name) => {
+    const th = document.createElement('th'); th.textContent = name; head.appendChild(th);
+  });
+  table.appendChild(head);
+  (data.sections || []).forEach((section) => {
+    const tr = document.createElement('tr');
+    [
+      section.title,
+      section.key,
+      `${section.source} / ${section.priority}`,
+      section.budget_chars === null || section.budget_chars === undefined ? '不限' : section.budget_chars,
+      section.summary,
+    ].forEach((value) => { const td = document.createElement('td'); td.textContent = text(value); tr.appendChild(td); });
+    table.appendChild(tr);
+  });
+  parent.appendChild(table);
 }
 function renderComposition(state) {
   const target = $('composition');
   clear(target);
-  const comp = state.context_composition || {};
+  const comp = state.prompt_composition || state.context_composition || {};
   const note = document.createElement('p');
   note.className = 'muted';
-  note.textContent = `当前查看群：${text(comp.selected_group_id)}。所有原文内容均隐藏，仅展示组成、优先级、预算和安全计数。`;
+  note.textContent = `当前查看群：${text(comp.selected_group_id)}。仅展示输入给机器人的 prompt 组成元数据：section 名称/key、source、priority、budget、简短静态摘要和数量/限制；所有原文内容均隐藏。`;
   target.appendChild(note);
-  renderCompositionKind(target, 'Direct 回复', comp.direct || {});
-  renderCompositionKind(target, 'Proactive 主动发言', comp.proactive || {});
+  renderCompositionKind(target, 'Direct 回复 prompt', comp.direct || {});
+  renderCompositionKind(target, 'Proactive 主动发言 prompt', comp.proactive || {});
+}
+function renderJson(state) {
+  $('state-json').textContent = JSON.stringify(state, null, 2);
+}
+async function errorFromResponse(response) {
+  let detail = '';
+  try {
+    const payload = await response.json();
+    if (payload && typeof payload.detail === 'string') detail = payload.detail;
+  } catch (ignored) {
+    detail = '';
+  }
+  return `HTTP ${response.status}${response.statusText ? ' ' + response.statusText : ''}${detail ? '：' + detail : ''}`;
 }
 async function loadState() {
   const status = $('status');
+  connectionState = lastSuccessfulRefreshAt ? '刷新中' : '连接中';
+  lastErrorDetail = '';
+  updateConnectionDisplays();
   status.textContent = ' 正在刷新…';
+  status.className = 'muted';
   try {
-    const response = await fetch('/admin/state', { cache: 'no-store' });
-    if (!response.ok) throw new Error(`HTTP ${response.status}`);
+    const response = await fetch(stateUrl(), { cache: 'no-store' });
+    if (!response.ok) throw new Error(await errorFromResponse(response));
     const state = await response.json();
+    populateGroupSelector(state);
     renderRuntime(state);
     renderModel(state);
     renderOcr(state);
+    renderMetrics(state);
     renderGroups(state);
     renderComposition(state);
+    renderJson(state);
+    lastSuccessfulRefreshAt = new Date();
+    successRefreshCount += 1;
+    connectionState = '已连接';
     status.textContent = ' 已更新';
     status.className = 'ok';
   } catch (error) {
-    status.textContent = ` 刷新失败：${error && error.message ? error.message : error}`;
+    connectionState = '错误';
+    lastErrorDetail = `刷新 /admin/state 失败：${error && error.message ? error.message : error}`;
+    status.textContent = ' 刷新失败';
     status.className = 'warn';
   }
+  updateConnectionDisplays();
 }
 $('refresh').addEventListener('click', loadState);
+$('group-select').addEventListener('change', (event) => {
+  selectedGroupId = event.target.value ? Number(event.target.value) : null;
+  loadState();
+});
+updateConnectionDisplays();
 loadState();
-setInterval(loadState, 5000);
+setInterval(loadState, REFRESH_INTERVAL_MS);
 </script>
 </body>
 </html>

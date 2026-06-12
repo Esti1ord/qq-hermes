@@ -185,10 +185,15 @@ Admin access contract:
   - runtime status, PID, start time, uptime, enabled flags, queue counts, worker
     counts, inflight counts, and integer counters;
   - primary/selected/fallback model/provider display labels after redaction;
-  - OCR enabled/configured booleans and safe model/provider labels;
+  - OCR enabled/configured booleans, safe model/provider labels, and safe OCR
+    status counts such as active inflight tasks, context task count, and cache
+    entry count;
   - group counts, queue sizes, context message counts, summary counts, stored text
     lengths, and prompt-section metadata;
-  - context composition section keys/titles/source/priority/budgets and static
+  - `prompt_composition` as the canonical prompt-composition payload, with
+    `context_composition` retained only as a compatibility alias while older UI or
+    tests still expect it;
+  - prompt composition section keys/titles/source/priority/budgets and static
     summaries.
 - Must not include raw chat text, prompt bodies, model outputs, OCR text, provider
   URLs, API key env names/values, tokens/cookies, image URLs, full provider
@@ -204,14 +209,17 @@ Admin access contract:
 | `/admin/state` requested remotely with valid bridge token | JSON response with `ok: true` |
 | Model/provider label looks like URL, token, API key, or local path | Return `[redacted]` and redaction flag |
 | Recent context contains chat text, user ids, nicknames, image URLs, or OCR text | Return counts/lengths only; raw values absent from serialized JSON |
-| Prompt composition is requested | Return section metadata/static summaries only; no section body text |
+| Prompt composition is requested | Return concise `prompt_composition` section metadata/static summaries only; no section body text |
+| Admin page shows metric trends | Compute short-lived client-side deltas from the current and previous safe `/admin/state` payload; do not persist or add server-side history unless separately specified |
+| Admin page shows JSON details | Render only the content-safe `/admin/state` payload; do not fetch or inline raw runtime stores |
 
 ### 5. Good/Base/Bad Cases
 
 - Good: `/admin/state` reports `recent_message_count`, `summary_total_chars`,
-  `group_model_override_count`, and section `budget_chars` without exposing the
-  underlying messages, summaries, or prompts.
-- Base: A local browser on `127.0.0.1` opens `/admin` and polls `/admin/state`.
+  `group_model_override_count`, and prompt section `budget_chars` without exposing
+  the underlying messages, summaries, or prompts.
+- Good: the admin page labels the section as "prompt composition" / `输入给机器人的提示词组成概览`, uses compact tables or chips, and keeps longer debugging detail in the already-safe JSON panel.
+- Base: A local browser on `127.0.0.1` opens `/admin`, selects a group, and polls `/admin/state?group_id=<id>`.
 - Bad: Publishing `/admin/state` on `0.0.0.0` without loopback/token protection.
 - Bad: Showing provider base URLs, API env var names, user ids, image URLs, full
   prompt sections, or chat snippets in the admin page for debugging convenience.
@@ -221,11 +229,14 @@ Admin access contract:
 - `tests/test_admin_routes.py` must assert:
   - `/admin` and `/admin/state` routes are registered;
   - `/admin` returns local dependency-free HTML;
-  - `/admin/state` contains runtime/model/context-composition top-level shapes;
+  - `/admin/state` contains runtime/model/`prompt_composition` top-level shapes and
+    may keep `context_composition` as a compatibility alias;
   - non-loopback requests require a valid bridge token;
   - serialized JSON excludes raw chat text, summaries, OCR text, provider URLs,
     API env names, tokens, nicknames, raw user ids, and image URLs;
-  - prompt composition sections expose metadata only, not `body` or raw `text`.
+  - prompt composition sections expose concise metadata only, not `body` or raw `text`;
+  - the HTML contains realtime connection status, group selector, metric trend cards,
+    and a read-only JSON panel backed only by `/admin/state`.
 - Runtime validation:
   ```bash
   ./venv/bin/python -m py_compile bridge.py qq_hermes_bridge/*.py

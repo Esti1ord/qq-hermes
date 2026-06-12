@@ -21,6 +21,14 @@ class FakeRequest:
         self.headers = headers or {}
 
 
+class FakeTask:
+    def __init__(self, *, done: bool):
+        self._done = done
+
+    def done(self):
+        return self._done
+
+
 def load_bridge_module():
     spec = importlib.util.spec_from_file_location("bridge_under_test_admin", BRIDGE_PATH)
     module = importlib.util.module_from_spec(spec)
@@ -40,7 +48,14 @@ def test_admin_html_endpoint_renders_local_page():
     assert "/admin/state" in route_paths
     assert response.media_type == "text/html"
     assert "QQ Hermes 本地数据查看" in body
-    assert "fetch('/admin/state'" in body
+    assert "输入给机器人的提示词组成概览" in body
+    assert "实时连接状态" in body
+    assert "成功刷新次数" in body
+    assert "查看群" in body
+    assert "id=\"group-select\"" in body
+    assert "/admin/state?${query}" in body
+    assert "指标趋势" in body
+    assert "当前 /admin/state JSON（只读）" in body
     assert "<script src=" not in body
     assert "<link rel=" not in body
 
@@ -77,17 +92,28 @@ def test_admin_state_json_shape_includes_runtime_model_and_context_overview():
         {"user_id": "bot", "name": "Esti", "role": "机器人", "text": "一条机器人回复"},
     ])
     bridge._context_summaries_by_group[group_id] = deque(["测试摘要一", "测试摘要二"])
+    bridge._ocr_inflight.clear()
+    bridge._ocr_inflight["active-image"] = FakeTask(done=False)
+    bridge._ocr_inflight["finished-image"] = FakeTask(done=True)
+    bridge._ocr_context_tasks.clear()
+    bridge._ocr_context_tasks.add(FakeTask(done=False))
+    bridge._ocr_context_tasks.add(FakeTask(done=True))
 
     state = asyncio.run(bridge.admin_state(FakeRequest(), group_id))
 
     assert state["ok"] is True
     assert state["runtime"]["status"] == "running"
+    assert state["selected_group_id"] == group_id
     assert state["runtime"]["target_group_id"] == group_id
     assert state["model_routing"]["primary"]["model"] == "gpt-5.4"
     assert state["model_routing"]["primary"]["provider"] == "官方"
     assert state["model_routing"]["selected_group"]["model"] == "deepseekv4flash"
     assert state["safety"]["raw_chat_hidden"] is True
     assert state["safety"]["prompt_text_hidden"] is True
+    assert state["prompt_composition"] == state["context_composition"]
+    assert state["ocr"]["status"]["inflight_count"] == 1
+    assert state["ocr"]["status"]["context_task_count"] == 1
+    assert "cache_entries" in state["ocr"]["status"]
 
     group = next(item for item in state["groups"] if item["group_id"] == group_id)
     assert group["context"]["recent_message_count"] == 2
@@ -101,8 +127,12 @@ def test_admin_state_json_shape_includes_runtime_model_and_context_overview():
     proactive_sections = composition["proactive"]["sections"]
     assert {section["key"] for section in direct_sections} >= {"current_message", "recent_context", "persona"}
     assert {section["key"] for section in proactive_sections} >= {"recent_context", "decision_strategy", "persona"}
+    allowed_section_keys = {"key", "title", "source", "priority", "budget_chars", "summary", "metrics", "content_hidden"}
+    assert all(set(section) <= allowed_section_keys for section in direct_sections + proactive_sections)
+    assert all(section["content_hidden"] is True for section in direct_sections + proactive_sections)
     assert all("body" not in section for section in direct_sections + proactive_sections)
     assert all("text" not in section for section in direct_sections + proactive_sections)
+    assert all(len(section["summary"]) <= 90 for section in direct_sections + proactive_sections)
 
 
 def test_admin_state_excludes_sensitive_values_and_raw_content():
@@ -121,10 +151,13 @@ def test_admin_state_excludes_sensitive_values_and_raw_content():
     bridge.ALLOWED_GROUP_IDS = {group_id}
     bridge.HERMES_MODEL = "sk-secret-token-abcdef123456"
     bridge.HERMES_PROVIDER = provider_url
+    bridge.HERMES_FALLBACK_MODEL = "PRIMARY_OCR_MODEL_API_KEY"
+    bridge.HERMES_FALLBACK_PROVIDER = "gateway.example"
+    bridge.HERMES_PROVIDER_BY_GROUP = {group_id: "127.0.0.1:11434"}
     bridge.HERMES_MODEL_BY_GROUP = {}
-    bridge.HERMES_PROVIDER_BY_GROUP = {}
     bridge.OCR_PROVIDER = provider_url
     bridge.OCR_MODEL = "ocr-model"
+    bridge.OCR_FALLBACK_PROVIDER = "ocr-gateway.example"
     bridge.OCR_PROVIDER_BASE_URL = "https://ocr-secret.example/v1"
     bridge.OCR_API_KEY_ENV = api_env_name
     bridge.ONEBOT_ACCESS_TOKEN = onebot_token
@@ -160,6 +193,10 @@ def test_admin_state_excludes_sensitive_values_and_raw_content():
         api_env_name,
         onebot_token,
         "secret-bridge-token",
+        "PRIMARY_OCR_MODEL_API_KEY",
+        "gateway.example",
+        "ocr-gateway.example",
+        "127.0.0.1:11434",
         user_name,
         "998877665544",
     ]:
