@@ -129,9 +129,139 @@ metrics.counter("messages_total", "...", user_hash=user_hash, query=user_query)
 metrics.observe_runtime_stat("route_decision", {"route": "direct", "queued": True})
 ```
 
----
 
-## What to Log
+## Scenario: Local admin `/admin` contract
+
+### 1. Scope / Trigger
+
+- Trigger: Adding/changing local admin pages, runtime-state endpoints, model-routing
+  dashboards, queue/context inspectors, or prompt/context composition views.
+- Why: The bridge may bind `0.0.0.0`; admin data is operationally useful but can
+  reveal sensitive chat, provider, or prompt information if exposed raw.
+
+### 2. Signatures
+
+- FastAPI endpoints live in `qq_hermes_bridge/runtime.py`:
+  ```python
+  @app.get("/admin", response_class=HTMLResponse)
+  async def admin_page(req: Request) -> HTMLResponse: ...
+
+  @app.get("/admin/state")
+  async def admin_state(req: Request, group_id: int | None = None) -> dict[str, Any]: ...
+  ```
+- Reusable HTML/sanitization helpers live in a focused module such as
+  `qq_hermes_bridge/admin_view.py`:
+  ```python
+  def safe_model_provider_details(model: Any, provider: Any) -> dict[str, Any]: ...
+  def summarize_context(messages: Iterable[Mapping[str, Any]], summaries: Iterable[Any]) -> dict[str, Any]: ...
+  def build_context_composition_overview(...) -> dict[str, Any]: ...
+  def build_admin_html() -> str: ...
+  ```
+- Access guard:
+  ```python
+  def require_admin_access(req: Request) -> None: ...
+  ```
+
+### 3. Contracts
+
+Admin access contract:
+
+| Request source | Expected behavior |
+|---|---|
+| Loopback client (`127.0.0.0/8`, `::1`, `localhost`) | Allow without token |
+| Non-loopback client with valid `BRIDGE_INBOUND_TOKEN` via `Authorization: Bearer ...` or `X-Bridge-Token` | Allow |
+| Non-loopback client without valid token | HTTP 403 |
+
+`GET /admin` contract:
+
+- Returns dependency-free HTML/CSS/JS unless a frontend stack is intentionally
+  introduced and documented.
+- Fetches JSON from `/admin/state`; it must not inline runtime secrets or raw
+  prompt/context content.
+
+`GET /admin/state` contract:
+
+- May include content-safe fields such as:
+  - runtime status, PID, start time, uptime, enabled flags, queue counts, worker
+    counts, inflight counts, and integer counters;
+  - primary/selected/fallback model/provider display labels after redaction;
+  - OCR enabled/configured booleans and safe model/provider labels;
+  - group counts, queue sizes, context message counts, summary counts, stored text
+    lengths, and prompt-section metadata;
+  - context composition section keys/titles/source/priority/budgets and static
+    summaries.
+- Must not include raw chat text, prompt bodies, model outputs, OCR text, provider
+  URLs, API key env names/values, tokens/cookies, image URLs, full provider
+  responses, local secret config paths, raw user identifiers, or nicknames.
+
+### 4. Validation & Error Matrix
+
+| Condition | Expected behavior |
+|---|---|
+| `/admin` requested from loopback | HTML response |
+| `/admin/state` requested from loopback | JSON response with `ok: true` |
+| `/admin/state` requested remotely without token | HTTP 403 |
+| `/admin/state` requested remotely with valid bridge token | JSON response with `ok: true` |
+| Model/provider label looks like URL, token, API key, or local path | Return `[redacted]` and redaction flag |
+| Recent context contains chat text, user ids, nicknames, image URLs, or OCR text | Return counts/lengths only; raw values absent from serialized JSON |
+| Prompt composition is requested | Return section metadata/static summaries only; no section body text |
+
+### 5. Good/Base/Bad Cases
+
+- Good: `/admin/state` reports `recent_message_count`, `summary_total_chars`,
+  `group_model_override_count`, and section `budget_chars` without exposing the
+  underlying messages, summaries, or prompts.
+- Base: A local browser on `127.0.0.1` opens `/admin` and polls `/admin/state`.
+- Bad: Publishing `/admin/state` on `0.0.0.0` without loopback/token protection.
+- Bad: Showing provider base URLs, API env var names, user ids, image URLs, full
+  prompt sections, or chat snippets in the admin page for debugging convenience.
+
+### 6. Tests Required
+
+- `tests/test_admin_routes.py` must assert:
+  - `/admin` and `/admin/state` routes are registered;
+  - `/admin` returns local dependency-free HTML;
+  - `/admin/state` contains runtime/model/context-composition top-level shapes;
+  - non-loopback requests require a valid bridge token;
+  - serialized JSON excludes raw chat text, summaries, OCR text, provider URLs,
+    API env names, tokens, nicknames, raw user ids, and image URLs;
+  - prompt composition sections expose metadata only, not `body` or raw `text`.
+- Runtime validation:
+  ```bash
+  ./venv/bin/python -m py_compile bridge.py qq_hermes_bridge/*.py
+  ./venv/bin/python -m pytest tests/test_admin_routes.py tests/test_inbound_auth.py tests/test_metrics_module.py -q
+  ```
+
+### 7. Wrong vs Correct
+
+#### Wrong
+
+```python
+@app.get("/admin/state")
+async def admin_state() -> dict[str, Any]:
+    return {
+        "provider_url": HERMES_PROVIDER_BASE_URL,
+        "api_key_env": HERMES_API_KEY_ENV,
+        "recent_messages": list(_recent_messages_by_group[TARGET_GROUP_ID]),
+        "prompt": build_prompt(...),
+    }
+```
+
+#### Correct
+
+```python
+@app.get("/admin/state")
+async def admin_state(req: Request, group_id: int | None = None) -> dict[str, Any]:
+    require_admin_access(req)
+    return {
+        "runtime": {"status": "running", "uptime_seconds": uptime_seconds},
+        "model_routing": {"primary": admin_view.safe_model_provider_details(HERMES_MODEL, HERMES_PROVIDER)},
+        "context_composition": admin_view.build_context_composition_overview(...),
+        "safety": {"prompt_text_hidden": True, "provider_urls_hidden": True},
+    }
+```
+
+---
 
 - Counts, durations, statuses, route decisions, queue sizes, and component names.
 - Hashes only where explicitly designed for JSONL runtime stats; never expose

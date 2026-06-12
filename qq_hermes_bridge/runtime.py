@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import ipaddress
 import json
 import os
 import re
@@ -23,10 +24,10 @@ from urllib.parse import quote_plus
 
 import httpx
 from fastapi import FastAPI, HTTPException, Request
-from fastapi.responses import PlainTextResponse
+from fastapi.responses import HTMLResponse, PlainTextResponse
 from pydantic import BaseModel
 
-from qq_hermes_bridge import app_helpers, command_utils, commands, config_utils, content_analysis_log as analysis_log_utils, context_store, events, group_files, handlers, hermes_runtime, jrrp, logging_utils, matching, media, media_fetch, metrics, model_output, onebot, outbound, proactive, profiles, prompt_time, reply_processing, reply_queue, runtime_stats, self_learning, text_utils, user_controls, vision
+from qq_hermes_bridge import admin_view, app_helpers, command_utils, commands, config_utils, content_analysis_log as analysis_log_utils, context_store, events, group_files, handlers, hermes_runtime, jrrp, logging_utils, matching, media, media_fetch, metrics, model_output, onebot, outbound, proactive, profiles, prompt_time, reply_processing, reply_queue, runtime_stats, self_learning, text_utils, user_controls, vision
 
 _RUNTIME_SOURCE_PATH = globals().get("_RUNTIME_PATH")
 BASE_DIR = (
@@ -3308,6 +3309,184 @@ def require_inbound_auth(req: Request) -> None:
     headers = getattr(req, "headers", {})
     if not app_helpers.request_is_authorized(headers, BRIDGE_INBOUND_TOKEN):
         raise HTTPException(status_code=401, detail="unauthorized")
+
+
+def admin_request_is_allowed(req: Request) -> bool:
+    headers = getattr(req, "headers", {})
+    if app_helpers.request_is_authorized(headers, BRIDGE_INBOUND_TOKEN) and bool(BRIDGE_INBOUND_TOKEN):
+        return True
+    client = getattr(req, "client", None)
+    host = str(getattr(client, "host", "") or "").strip()
+    if host in {"localhost", "localhost.localdomain"}:
+        return True
+    try:
+        return ipaddress.ip_address(host).is_loopback
+    except ValueError:
+        return False
+
+
+def require_admin_access(req: Request) -> None:
+    if not admin_request_is_allowed(req):
+        raise HTTPException(status_code=403, detail="admin endpoint is local-only")
+
+
+def _admin_reply_queue_size_raw(group_id: int, kind: str) -> int:
+    queue_kind = "proactive" if kind == "proactive" else "direct"
+    queue = _reply_queue_by_group.get((group_id, queue_kind))
+    return len(queue or ())
+
+
+def _admin_group_ids(selected_group_id: int | None = None) -> list[int]:
+    ids = set(ALLOWED_GROUP_IDS)
+    if selected_group_id is not None:
+        ids.add(selected_group_id)
+    ids.update(key for key in _recent_messages_by_group.keys() if isinstance(key, int))
+    ids.update(key for key in _context_summaries_by_group.keys() if isinstance(key, int))
+    ids.update(key for key in _proactive_state_by_group.keys() if isinstance(key, int))
+    ids.update(key for key in HERMES_MODEL_BY_GROUP.keys() if isinstance(key, int))
+    ids.update(key for key in HERMES_PROVIDER_BY_GROUP.keys() if isinstance(key, int))
+    for key in _reply_queue_by_group.keys():
+        if isinstance(key, tuple) and key and isinstance(key[0], int):
+            ids.add(key[0])
+    return sorted(ids)
+
+
+def _admin_context_stats_for_group(group_id: int) -> dict[str, Any]:
+    messages = list(_recent_messages_by_group.get(group_id) or ())
+    if not messages and group_id == TARGET_GROUP_ID:
+        messages = list(_recent_messages)
+    summaries = list(_context_summaries_by_group.get(group_id) or ())
+    return admin_view.summarize_context(messages, summaries)
+
+
+def _admin_group_state(group_id: int, now: float) -> dict[str, Any]:
+    direct_queue_size = _admin_reply_queue_size_raw(group_id, "direct")
+    proactive_queue_size = _admin_reply_queue_size_raw(group_id, "proactive")
+    worker = _reply_workers_by_group.get(group_id)
+    return {
+        "group_id": group_id,
+        "is_target_group": group_id == TARGET_GROUP_ID,
+        "allowed": group_id in ALLOWED_GROUP_IDS,
+        "model": admin_view.safe_model_provider_details(
+            hermes_model_for_group(group_id),
+            hermes_provider_for_group(group_id),
+        ),
+        "model_override": group_id in HERMES_MODEL_BY_GROUP,
+        "provider_override": group_id in HERMES_PROVIDER_BY_GROUP,
+        "context": _admin_context_stats_for_group(group_id),
+        "queues": {
+            "direct": direct_queue_size,
+            "proactive": proactive_queue_size,
+            "total": direct_queue_size + proactive_queue_size,
+        },
+        "worker_running": bool(worker is not None and not worker.done()),
+        "direct_inflight": group_id in _direct_reply_inflight_groups,
+        "proactive_inflight": group_id in _proactive_inflight_groups,
+        "proactive": admin_view.safe_proactive_state(_proactive_state_by_group.get(group_id, {}), now=now),
+    }
+
+
+def build_admin_state(group_id: int | None = None) -> dict[str, Any]:
+    selected_group_id = group_id if group_id is not None else TARGET_GROUP_ID
+    now = time.time()
+    group_states = [_admin_group_state(gid, now) for gid in _admin_group_ids(selected_group_id)]
+    selected_context_stats = _admin_context_stats_for_group(selected_group_id)
+    primary_model = admin_view.safe_model_provider_details(HERMES_MODEL, HERMES_PROVIDER)
+    selected_model = admin_view.safe_model_provider_details(
+        hermes_model_for_group(selected_group_id),
+        hermes_provider_for_group(selected_group_id),
+    )
+    fallback_model = admin_view.safe_model_provider_details(HERMES_FALLBACK_MODEL, HERMES_FALLBACK_PROVIDER)
+    ocr_primary = admin_view.safe_model_provider_details(OCR_MODEL or HERMES_MODEL, OCR_PROVIDER)
+    ocr_fallback = admin_view.safe_model_provider_details(OCR_FALLBACK_MODEL, OCR_FALLBACK_PROVIDER)
+    queue_total = sum(int((group.get("queues") or {}).get("total") or 0) for group in group_states)
+    active_worker_count = sum(1 for task in _reply_workers_by_group.values() if task is not None and not task.done())
+    return {
+        "ok": True,
+        "generated_at": datetime.fromtimestamp(now).isoformat(timespec="seconds"),
+        "runtime": {
+            "status": "running",
+            "pid": os.getpid(),
+            "started_at": datetime.fromtimestamp(_runtime_started_at).isoformat(timespec="seconds"),
+            "uptime_seconds": max(0, int(now - _runtime_started_at)),
+            "target_group_id": TARGET_GROUP_ID,
+            "allowed_group_count": len(ALLOWED_GROUP_IDS),
+            "context_persist_enabled": CONTEXT_PERSIST_ENABLED,
+            "runtime_stats_enabled": RUNTIME_STATS_ENABLED,
+            "prometheus_enabled": PROMETHEUS_ENABLED,
+            "proactive_enabled": PROACTIVE_ENABLED,
+            "ocr_enabled": OCR_ENABLED,
+            "pending": {
+                "queue_total": queue_total,
+                "active_worker_count": active_worker_count,
+                "direct_inflight_count": len(_direct_reply_inflight_groups),
+                "proactive_inflight_count": len(_proactive_inflight_groups),
+            },
+            "counters": admin_view.safe_counters(_runtime_counters),
+        },
+        "model_routing": {
+            "primary": primary_model,
+            "selected_group": selected_model,
+            "fallback": {
+                **fallback_model,
+                "enabled": HERMES_FALLBACK_ENABLED,
+                "available_for_selected_group": hermes_fallback_available(selected_group_id),
+            },
+            "group_model_override_count": len(HERMES_MODEL_BY_GROUP),
+            "group_provider_override_count": len(HERMES_PROVIDER_BY_GROUP),
+            "group_sessions_enabled": HERMES_GROUP_SESSIONS_ENABLED,
+            "session_autocompact_enabled": HERMES_SESSION_AUTOCOMPACT_ENABLED,
+        },
+        "ocr": {
+            **ocr_primary,
+            "enabled": OCR_ENABLED,
+            "external_provider_allowed": OCR_EXTERNAL_PROVIDER_ALLOWED,
+            "include_in_prompt": OCR_INCLUDE_IN_PROMPT,
+            "include_in_context": OCR_INCLUDE_IN_CONTEXT,
+            "persist_text_in_context": OCR_PERSIST_TEXT_IN_CONTEXT,
+            "fallback": {
+                **ocr_fallback,
+                "enabled": OCR_FALLBACK_ENABLED,
+                "available": ocr_fallback_available(),
+            },
+        },
+        "limits": {
+            "max_prompt_chars": MAX_PROMPT_CHARS,
+            "context_max_messages": CONTEXT_MAX_MESSAGES,
+            "context_summary_max": CONTEXT_SUMMARY_MAX,
+            "context_summarize_enabled": CONTEXT_SUMMARIZE_ENABLED,
+            "max_reply_chars": MAX_REPLY_CHARS,
+        },
+        "groups": group_states,
+        "context_composition": admin_view.build_context_composition_overview(
+            group_id=selected_group_id,
+            context_stats=selected_context_stats,
+            max_prompt_chars=MAX_PROMPT_CHARS,
+            ocr_enabled=OCR_ENABLED,
+            self_learning_enabled=SELF_LEARNING_ENABLED and SELF_LEARNING_INJECT_ENABLED,
+        ),
+        "safety": {
+            "raw_chat_hidden": True,
+            "prompt_text_hidden": True,
+            "model_output_hidden": True,
+            "ocr_text_hidden": True,
+            "provider_urls_hidden": True,
+            "api_env_hidden": True,
+            "tokens_hidden": True,
+        },
+    }
+
+
+@app.get("/admin", response_class=HTMLResponse)
+async def admin_page(req: Request) -> HTMLResponse:
+    require_admin_access(req)
+    return HTMLResponse(admin_view.build_admin_html())
+
+
+@app.get("/admin/state")
+async def admin_state(req: Request, group_id: int | None = None) -> dict[str, Any]:
+    require_admin_access(req)
+    return build_admin_state(group_id)
 
 
 @app.get("/health")
