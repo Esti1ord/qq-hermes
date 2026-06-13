@@ -15,6 +15,14 @@ from . import prompt_service
 
 REDACTED = "[redacted]"
 
+REPLY_ERROR_REASONS: tuple[dict[str, str], ...] = (
+    {"key": "direct_generation_failures", "label": "直接回复生成失败"},
+    {"key": "direct_send_errors", "label": "直接回复发送失败"},
+    {"key": "send_errors", "label": "群消息发送失败"},
+    {"key": "command_errors", "label": "命令处理错误"},
+    {"key": "hermes_errors", "label": "Hermes 模型调用错误"},
+)
+
 _SENSITIVE_MARKERS = (
     "http://",
     "https://",
@@ -110,6 +118,22 @@ def safe_counters(counters: Mapping[str, Any]) -> dict[str, int]:
             continue
         safe[name] = _safe_int(value)
     return dict(sorted(safe.items()))
+
+
+def build_reply_error_summary(counters: Mapping[str, Any]) -> dict[str, Any]:
+    """Aggregate stable reply error counters for /admin/state."""
+    reasons = [
+        {
+            "key": reason["key"],
+            "label": reason["label"],
+            "count": _safe_int(counters.get(reason["key"])),
+        }
+        for reason in REPLY_ERROR_REASONS
+    ]
+    return {
+        "total": sum(reason["count"] for reason in reasons),
+        "reasons": reasons,
+    }
 
 
 def summarize_context(messages: Iterable[Mapping[str, Any]], summaries: Iterable[Any]) -> dict[str, Any]:
@@ -318,7 +342,15 @@ def build_admin_html() -> str:
     h2 { margin: 0 0 12px; font-size: 18px; }
     h3 { margin: 14px 0 8px; font-size: 16px; }
     p { margin: 4px 0; color: #94a3b8; }
-    button, select { padding: 8px 12px; border: 1px solid #475569; border-radius: 8px; background: #1e293b; color: #e2e8f0; }
+    button, select, input, textarea { padding: 8px 12px; border: 1px solid #475569; border-radius: 8px; background: #1e293b; color: #e2e8f0; }
+    textarea { min-height: 80px; resize: vertical; }
+    input, textarea { box-sizing: border-box; width: 100%; }
+    form.admin-memory-form { display: grid; gap: 10px; grid-template-columns: minmax(150px, 220px) minmax(100px, 140px) 1fr auto; align-items: end; margin: 12px 0 16px; }
+    form.admin-memory-form label { display: grid; gap: 6px; font-size: 13px; }
+    .actions { display: flex; flex-wrap: wrap; gap: 6px; }
+    .danger { border-color: #7f1d1d; }
+    .memory-preview { max-width: 520px; }
+    @media (max-width: 800px) { form.admin-memory-form { grid-template-columns: 1fr; } }
     button { cursor: pointer; }
     button:hover { background: #334155; }
     label { color: #cbd5e1; font-weight: 600; }
@@ -357,7 +389,7 @@ def build_admin_html() -> str:
 <body>
   <header>
     <h1>QQ Hermes 本地数据查看</h1>
-    <p>实时查看运行状态、当前模型路由，以及输入给机器人的提示词组成概览。</p>
+    <p>实时查看运行状态、当前模型路由、输入给机器人的提示词组成概览，以及手动管理记忆 / 自学习内容。</p>
     <p>安全策略：本页不展示原始聊天、完整 prompt、模型输出、OCR 文本、Provider URL、Token/Cookie 或本地密钥路径。</p>
     <div class="toolbar">
       <button id="refresh" type="button">立即刷新</button>
@@ -378,7 +410,30 @@ def build_admin_html() -> str:
     <section><h2>模型 / Provider</h2><div id="model"></div></section>
     <section><h2>OCR / 媒体</h2><div id="ocr"></div></section>
     <section class="full"><h2>指标趋势</h2><div id="metrics" class="metric-grid"></div></section>
+    <section class="full"><h2>回复错误原因</h2><div id="reply-error-reasons"></div></section>
     <section class="full"><h2>群状态</h2><div id="groups"></div></section>
+    <section class="full">
+      <h2>记忆 / 自学习管理</h2>
+      <p class="muted">用于删除/停用不合适的学习样例，或添加人工提示、记忆、梗/风格条目。列表只展示短预览和安全元数据。</p>
+      <form id="memory-add-form" class="admin-memory-form">
+        <label>类型
+          <select id="memory-entry-type">
+            <option value="memory">记忆</option>
+            <option value="prompt_guidance">Prompt 指引</option>
+            <option value="self_learning">自学习/梗</option>
+          </select>
+        </label>
+        <label>初始权重
+          <input id="memory-entry-weight" type="number" min="0.1" max="20" step="0.1" value="1">
+        </label>
+        <label>内容
+          <textarea id="memory-entry-text" maxlength="600" placeholder="添加给 Esti 使用的人工记忆或提示；不要填写 token、URL、Cookie、图片链接、用户 ID 等敏感内容。"></textarea>
+        </label>
+        <button id="memory-add" type="submit">添加条目</button>
+      </form>
+      <div id="memory-status" class="muted" aria-live="polite"></div>
+      <div id="memory"></div>
+    </section>
     <section class="full"><h2>输入给机器人的提示词组成概览</h2><div id="composition"></div></section>
     <section class="full"><h2>当前 /admin/state JSON（只读）</h2><pre id="state-json" aria-label="content-safe admin state json">等待首次刷新…</pre></section>
   </main>
@@ -537,6 +592,32 @@ function renderOcr(state) {
     ['Fallback 模型', fallback.model],
   ]);
 }
+function renderReplyErrorReasons(state) {
+  const target = $('reply-error-reasons');
+  clear(target);
+  const replyErrors = state.reply_errors || {};
+  const reasons = Array.isArray(replyErrors.reasons) ? replyErrors.reasons : [];
+  const visibleRows = reasons.filter((row) => numberValue(row.count) > 0);
+  if (!visibleRows.length) {
+    const empty = document.createElement('p');
+    empty.className = 'muted';
+    empty.textContent = '暂无回复错误';
+    target.appendChild(empty);
+    return;
+  }
+  const table = document.createElement('table');
+  const head = document.createElement('tr');
+  ['错误原因', 'counter key', '计数'].forEach((name) => {
+    const th = document.createElement('th'); th.textContent = name; head.appendChild(th);
+  });
+  table.appendChild(head);
+  visibleRows.forEach((row) => {
+    const tr = document.createElement('tr');
+    [row.label, row.key, numberValue(row.count)].forEach((value) => { const td = document.createElement('td'); td.textContent = text(value); tr.appendChild(td); });
+    table.appendChild(tr);
+  });
+  target.appendChild(table);
+}
 function metricRows(state) {
   const rt = state.runtime || {};
   const pending = rt.pending || {};
@@ -544,7 +625,7 @@ function metricRows(state) {
   const ocr = state.ocr || {};
   const ocrStatus = ocr.status || {};
   const replySuccess = numberValue(counters.direct_replies_sent) + numberValue(counters.proactive_replies_sent) + numberValue(counters.command_success);
-  const replyErrors = numberValue(counters.direct_send_errors) + numberValue(counters.direct_generation_failures) + numberValue(counters.send_errors) + numberValue(counters.command_errors) + numberValue(counters.hermes_errors);
+  const replyErrors = numberValue(state.reply_errors && state.reply_errors.total);
   return [
     { key: 'queue_total', label: '队列总数', value: numberValue(pending.queue_total), desc: 'direct + proactive 待处理' },
     { key: 'active_worker_count', label: '活跃 worker', value: numberValue(pending.active_worker_count), desc: '正在运行的回复 worker' },
@@ -674,6 +755,115 @@ function renderComposition(state) {
   renderCompositionKind(target, 'Direct 回复 prompt', comp.direct || {});
   renderCompositionKind(target, 'Proactive 主动发言 prompt', comp.proactive || {});
 }
+function memoryUrl() {
+  const params = new URLSearchParams();
+  if (selectedGroupId !== null && selectedGroupId !== undefined && selectedGroupId !== '') {
+    params.set('group_id', String(selectedGroupId));
+  }
+  const query = params.toString();
+  return query ? `/admin/memory?${query}` : '/admin/memory';
+}
+function memoryPayload(extra) {
+  return Object.assign({ group_id: selectedGroupId }, extra || {});
+}
+async function postMemoryAction(url, payload) {
+  const response = await fetch(url, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload),
+  });
+  if (!response.ok) throw new Error(await errorFromResponse(response));
+  return response.json();
+}
+function renderMemoryRows(state) {
+  const target = $('memory');
+  clear(target);
+  const entries = Array.isArray(state.entries) ? state.entries : [];
+  const summary = state.summary || {};
+  const note = document.createElement('p');
+  note.className = 'muted';
+  note.textContent = `当前群 ${text(state.group_id)}：共 ${summary.total || 0} 条，启用 ${summary.active || 0}，停用 ${summary.disabled || 0}，人工 ${summary.manual || 0}，自学习 ${summary.self_learning || 0}。`;
+  target.appendChild(note);
+  if (!entries.length) {
+    const empty = document.createElement('p');
+    empty.className = 'muted';
+    empty.textContent = '暂无可管理记忆或自学习条目';
+    target.appendChild(empty);
+    return;
+  }
+  const table = document.createElement('table');
+  const head = document.createElement('tr');
+  ['预览', '类型 / 来源', '状态', '权重 / 强化', '操作'].forEach((name) => {
+    const th = document.createElement('th'); th.textContent = name; head.appendChild(th);
+  });
+  table.appendChild(head);
+  entries.forEach((entry) => {
+    const tr = document.createElement('tr');
+    const preview = document.createElement('td');
+    preview.className = 'memory-preview';
+    preview.textContent = entry.redacted ? '[redacted]' : text(entry.preview);
+    const source = document.createElement('td');
+    source.textContent = `${text(entry.type)} / ${text(entry.source)}`;
+    const status = document.createElement('td');
+    status.textContent = text(entry.status);
+    const counters = document.createElement('td');
+    counters.textContent = `${text(entry.weight)} / ${text(entry.reinforcement)}`;
+    const actions = document.createElement('td');
+    const box = document.createElement('div');
+    box.className = 'actions';
+    const strengthen = document.createElement('button');
+    strengthen.type = 'button';
+    strengthen.textContent = '强化';
+    strengthen.disabled = !(entry.operations && entry.operations.strengthen);
+    strengthen.addEventListener('click', () => memoryAction('/admin/memory/strengthen', { entry_id: entry.id, amount: 1 }, '已强化'));
+    const disable = document.createElement('button');
+    disable.type = 'button';
+    disable.textContent = '停用';
+    disable.disabled = !(entry.operations && entry.operations.disable);
+    disable.addEventListener('click', () => memoryAction('/admin/memory/delete', { entry_id: entry.id, mode: 'disable' }, '已停用'));
+    const del = document.createElement('button');
+    del.type = 'button';
+    del.className = 'danger';
+    del.textContent = '删除';
+    del.addEventListener('click', () => memoryAction('/admin/memory/delete', { entry_id: entry.id, mode: 'delete' }, '已删除'));
+    box.append(strengthen, disable, del);
+    actions.appendChild(box);
+    [preview, source, status, counters, actions].forEach((td) => tr.appendChild(td));
+    table.appendChild(tr);
+  });
+  target.appendChild(table);
+}
+async function loadMemory() {
+  const status = $('memory-status');
+  if (!status) return;
+  status.textContent = '正在加载记忆 / 自学习条目…';
+  status.className = 'muted';
+  try {
+    const response = await fetch(memoryUrl(), { cache: 'no-store' });
+    if (!response.ok) throw new Error(await errorFromResponse(response));
+    const state = await response.json();
+    renderMemoryRows(state);
+    status.textContent = '记忆 / 自学习条目已更新';
+    status.className = 'ok';
+  } catch (error) {
+    status.textContent = `记忆 / 自学习加载失败：${error && error.message ? error.message : error}`;
+    status.className = 'warn';
+  }
+}
+async function memoryAction(url, payload, okText) {
+  const status = $('memory-status');
+  try {
+    status.textContent = '正在提交记忆管理操作…';
+    status.className = 'muted';
+    await postMemoryAction(url, memoryPayload(payload));
+    status.textContent = okText;
+    status.className = 'ok';
+    await loadMemory();
+  } catch (error) {
+    status.textContent = `记忆管理操作失败：${error && error.message ? error.message : error}`;
+    status.className = 'warn';
+  }
+}
 function renderJson(state) {
   $('state-json').textContent = JSON.stringify(state, null, 2);
 }
@@ -703,9 +893,11 @@ async function loadState() {
     renderModel(state);
     renderOcr(state);
     renderMetrics(state);
+    renderReplyErrorReasons(state);
     renderGroups(state);
     renderComposition(state);
     renderJson(state);
+    await loadMemory();
     lastSuccessfulRefreshAt = new Date();
     successRefreshCount += 1;
     connectionState = '已连接';
@@ -720,6 +912,16 @@ async function loadState() {
   updateConnectionDisplays();
 }
 $('refresh').addEventListener('click', loadState);
+$('memory-add-form').addEventListener('submit', async (event) => {
+  event.preventDefault();
+  const textValue = $('memory-entry-text').value || '';
+  await memoryAction('/admin/memory/add', {
+    entry_type: $('memory-entry-type').value,
+    text: textValue,
+    weight: Number($('memory-entry-weight').value || 1),
+  }, '已添加');
+  if (textValue.trim()) $('memory-entry-text').value = '';
+});
 $('group-select').addEventListener('change', (event) => {
   selectedGroupId = event.target.value ? Number(event.target.value) : null;
   loadState();

@@ -272,6 +272,213 @@ async def admin_state(req: Request, group_id: int | None = None) -> dict[str, An
     }
 ```
 
+
+## Scenario: Admin memory/self-learning management contract
+
+### 1. Scope / Trigger
+
+- Trigger: Adding/changing admin memory curation endpoints, `admin_memory.py`,
+  self-learning storage fields, or the `/admin` memory management UI.
+- Why: Admin memory curation intentionally edits prompt-affecting runtime data. The
+  surface must remain local/token-protected, must not leak unrelated chat or raw
+  identifiers, and must not make sensitive learned content more likely to enter
+  prompts.
+
+### 2. Signatures
+
+- FastAPI endpoints live in `qq_hermes_bridge/runtime.py` and must call
+  `require_admin_access(req)` before reading or mutating storage:
+  ```python
+  @app.get("/admin/memory")
+  async def admin_memory_list(req: Request, group_id: int | None = None) -> dict[str, Any]: ...
+
+  class AdminMemoryAddRequest(BaseModel):
+      group_id: int | None = None
+      entry_type: str = "memory"
+      text: str
+      weight: float = 1.0
+
+  @app.post("/admin/memory/add")
+  async def admin_memory_add(req: Request, payload: AdminMemoryAddRequest) -> dict[str, Any]: ...
+
+  class AdminMemoryDeleteRequest(BaseModel):
+      group_id: int | None = None
+      entry_id: str
+      mode: str = "disable"
+
+  @app.post("/admin/memory/delete")
+  async def admin_memory_delete(req: Request, payload: AdminMemoryDeleteRequest) -> dict[str, Any]: ...
+
+  class AdminMemoryStrengthenRequest(BaseModel):
+      group_id: int | None = None
+      entry_id: str
+      amount: int = 1
+
+  @app.post("/admin/memory/strengthen")
+  async def admin_memory_strengthen(req: Request, payload: AdminMemoryStrengthenRequest) -> dict[str, Any]: ...
+  ```
+- Admin helper API lives in `qq_hermes_bridge/admin_memory.py`:
+  ```python
+  def list_memory_entries(group_id: int, *, group_config_dir: Path, config: self_learning.SelfLearningConfig) -> dict[str, Any]: ...
+  def add_manual_entry(group_id: int, *, entry_type: str, text: str, weight: float, group_config_dir: Path, config: self_learning.SelfLearningConfig, now: float | None = None) -> dict[str, Any]: ...
+  def delete_or_disable_entry(group_id: int, *, entry_id: str, mode: str, group_config_dir: Path, config: self_learning.SelfLearningConfig) -> dict[str, Any]: ...
+  def strengthen_entry(group_id: int, *, entry_id: str, amount: int, group_config_dir: Path, config: self_learning.SelfLearningConfig) -> dict[str, Any]: ...
+  ```
+- Self-learning storage helpers in `qq_hermes_bridge/self_learning.py` expose the
+  existing per-group JSON store to admin code:
+  ```python
+  def load_learning_data_for_group(group_id: int, *, group_config_dir: Path, config: SelfLearningConfig) -> dict[str, Any]: ...
+  def save_learning_data_for_group(group_id: int, data: dict[str, Any], *, group_config_dir: Path, config: SelfLearningConfig, now: float | None = None) -> None: ...
+  ```
+
+### 3. Contracts
+
+Admin access and UI contracts:
+
+- `/admin/memory*` endpoints use the same loopback-or-valid-`BRIDGE_INBOUND_TOKEN`
+  access contract as `/admin` and `/admin/state`.
+- `/admin` may include a dependency-free memory management panel that fetches
+  `/admin/memory?group_id=<id>` and posts JSON to the mutation endpoints.
+- `/admin/state` may include only a `memory_management` summary such as total,
+  active, disabled, manual, self-learning, and strengthened counts. It must not
+  include memory previews or raw stored text.
+
+Storage contract:
+
+- The per-group `self_learning.json` shape remains backward-compatible:
+  ```json
+  {
+    "version": 1,
+    "group_id": 975805598,
+    "samples": [{"ts": 1.0, "text": "auto learned text", "source": "auto"}],
+    "manual_entries": [{"id": "manual:...", "ts": 1.0, "text": "curated hint", "entry_type": "memory", "source": "admin", "enabled": true, "weight": 1.0, "reinforcement": 0}]
+  }
+  ```
+- `samples` are auto-collected self-learning entries; `manual_entries` are
+  operator-curated entries. Missing `manual_entries` must load as `[]`.
+- Soft-disabled entries carry `enabled: false`, `disabled: true`, or
+  `status: "disabled"`; prompt injection and recollection of the exact disabled
+  sample text must skip them.
+- Strengthened auto samples carry `admin_strengthened: true`, `reinforcement`, and
+  `weight`; they may be injected as bounded admin-curated hints only when not
+  disabled.
+- Legacy entries without stored IDs may receive their generated admin ID before a
+  mutation so lookup remains stable after normalization.
+
+Response contract:
+
+- `GET /admin/memory` returns `ok`, `group_id`, `entries`, `summary`, `limits`, and
+  `safety`.
+- Each entry includes only safe metadata: generated/stored `id`, `group_id`,
+  `type`, `source`, `storage`, `status`, short `preview`, char counts, timestamp,
+  numeric `weight`/`reinforcement`, and supported `operations`.
+- Previews are short and sanitized; URL/CQ-code content is stripped or redacted,
+  raw numeric identifiers are redacted/rejected, and unrelated runtime chat buffers
+  are never read for this endpoint.
+- Mutation success returns `ok: true`, `action`, the affected serialized `entry`,
+  and updated `summary`.
+
+### 4. Validation & Error Matrix
+
+| Condition | Expected behavior |
+|---|---|
+| Non-loopback request to any `/admin/memory*` endpoint without valid token | HTTP 403 |
+| `group_id` missing | Use `TARGET_GROUP_ID` |
+| `group_id` is non-integer or `<= 0` | HTTP 400 `invalid group_id` |
+| `entry_type` outside `prompt_guidance`, `memory`, `self_learning` and aliases | HTTP 400 `invalid entry_type` |
+| Manual text shorter than 2 chars or longer than 600 chars | HTTP 400 |
+| Manual text contains CQ code, URL, raw numeric identifier, token/API-key/password/cookie marker, or redaction-shaped secret/path/host | HTTP 400 |
+| `weight` is non-numeric, NaN/Infinity, `< 0.1`, or `> 20` | HTTP 400 `invalid weight` |
+| `mode` is not `disable` or `delete` | HTTP 400 `invalid mode` |
+| `entry_id` is malformed | HTTP 400 `invalid entry_id` |
+| `entry_id` is valid-shaped but not found | HTTP 404 `entry not found` |
+| Strengthen `amount` is not an integer from 1 to 20 | HTTP 400 `invalid amount` |
+| Strengthening a disabled entry | HTTP 400 `entry disabled` |
+| Strengthening an entry whose preview is redacted/sensitive | HTTP 400; do not increase prompt weight |
+| Delete mode `disable` | Soft-disable and keep the entry in storage/list with `status: disabled` |
+| Delete mode `delete` | Remove only the selected entry from its collection |
+| Disabled sample text appears again in collection path | Return `False`; do not create a new active duplicate |
+
+### 5. Good/Base/Bad Cases
+
+- Good: A local admin adds `entry_type="prompt_guidance"`, text `遇到求助先给结论`,
+  and weight `2`; `/admin/memory` returns a `manual:` entry with a short preview,
+  and prompt injection may include it as an `人工提示` line within
+  `SELF_LEARNING_MAX_PROMPT_CHARS`.
+- Good: A learned sample containing an inappropriate meme is disabled; the list
+  still shows it as disabled for audit, prompt injection skips it, and collecting
+  the same exact text later does not reactivate it.
+- Good: A legacy learned sample without an `id` can be strengthened or disabled
+  because the admin helper preserves the generated `sample:<hash>` ID before save.
+- Base: `GET /admin/memory?group_id=975805598` returns counts and previews for only
+  that group's `self_learning.json` file.
+- Bad: Exposing full chat buffers, QQ user IDs, nicknames, provider URLs, API env
+  names, tokens, or prompt bodies through `/admin/state`, `/admin/memory`, or the
+  admin HTML.
+- Bad: Strengthening redacted/sensitive content such as a token-shaped sample,
+  because that can promote leaked secrets into future prompts.
+- Bad: Treating `delete` as a broad cleanup command; it must affect only the
+  selected `entry_id` and collection.
+
+### 6. Tests Required
+
+- `tests/test_admin_routes.py` must assert:
+  - `/admin/memory`, `/admin/memory/add`, `/admin/memory/delete`, and
+    `/admin/memory/strengthen` routes are registered;
+  - non-loopback requests require a valid bridge token for list and all mutations;
+  - `/admin` contains the dependency-free memory management panel and fetch/post
+    paths, with no external script/link dependency;
+  - `GET /admin/memory` serializes learned samples as short safe previews and does
+    not emit URLs, raw user identifiers, API env names, tokens, or unrelated chat;
+  - add, strengthen, soft-disable, and hard-delete return expected actions,
+    counters, status, and weight/reinforcement changes;
+  - sensitive manual input, non-finite weights, sensitive strengthen targets, and
+    invalid IDs/modes/amounts fail safely;
+  - legacy generated IDs stay usable after mutation/save normalization.
+- `tests/test_self_learning.py` must assert:
+  - disabled samples are skipped by prompt context;
+  - exact disabled text is not recollected as a new active sample;
+  - unrelated new samples still collect after a disabled sample exists.
+- Runtime validation:
+  ```bash
+  ./venv/bin/python -m py_compile bridge.py qq_hermes_bridge/*.py
+  ./venv/bin/python -m pytest tests/test_admin_routes.py tests/test_self_learning.py tests/test_bridge_self_learning.py -q
+  ./venv/bin/python -m pytest tests/test_inbound_auth.py tests/test_metrics_module.py -q
+  ```
+
+### 7. Wrong vs Correct
+
+#### Wrong
+
+```python
+@app.post("/admin/memory/strengthen")
+async def admin_memory_strengthen(payload: dict[str, Any]) -> dict[str, Any]:
+    # No admin guard, no ID validation, and may promote leaked tokens into prompts.
+    item = find_by_text(payload["text"])
+    item["weight"] = 999
+    return {"ok": True, "item": item}  # leaks raw text and storage shape
+```
+
+#### Correct
+
+```python
+@app.post("/admin/memory/strengthen")
+async def admin_memory_strengthen(req: Request, payload: AdminMemoryStrengthenRequest) -> dict[str, Any]:
+    require_admin_access(req)
+    try:
+        return admin_memory.strengthen_entry(
+            admin_memory.group_id_or_default(payload.group_id, target_group_id=TARGET_GROUP_ID),
+            entry_id=payload.entry_id,
+            amount=payload.amount,
+            group_config_dir=GROUP_CONFIG_DIR,
+            config=SELF_LEARNING_CONFIG,
+        )
+    except admin_memory.AdminMemoryNotFound as exc:
+        raise HTTPException(status_code=404, detail="entry not found") from exc
+    except admin_memory.AdminMemoryError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+```
+
 ---
 
 - Counts, durations, statuses, route decisions, queue sizes, and component names.

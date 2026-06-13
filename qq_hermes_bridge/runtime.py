@@ -27,7 +27,7 @@ from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import HTMLResponse, PlainTextResponse
 from pydantic import BaseModel
 
-from qq_hermes_bridge import admin_view, app_helpers, command_utils, commands, config_utils, content_analysis_log as analysis_log_utils, context_store, events, group_files, handlers, hermes_runtime, jrrp, logging_utils, matching, media, media_fetch, metrics, model_output, onebot, outbound, proactive, profiles, prompt_time, reply_processing, reply_queue, runtime_stats, self_learning, text_utils, user_controls, vision
+from qq_hermes_bridge import admin_memory, admin_view, app_helpers, command_utils, commands, config_utils, content_analysis_log as analysis_log_utils, context_store, events, group_files, handlers, hermes_runtime, jrrp, logging_utils, matching, media, media_fetch, metrics, model_output, onebot, outbound, proactive, profiles, prompt_time, reply_processing, reply_queue, runtime_stats, self_learning, text_utils, user_controls, vision
 
 _RUNTIME_SOURCE_PATH = globals().get("_RUNTIME_PATH")
 BASE_DIR = (
@@ -3380,6 +3380,27 @@ def _admin_group_state(group_id: int, now: float) -> dict[str, Any]:
     }
 
 
+def _admin_memory_summary_for_group(group_id: int) -> dict[str, Any]:
+    try:
+        return admin_memory.memory_summary(
+            group_id,
+            group_config_dir=GROUP_CONFIG_DIR,
+            config=SELF_LEARNING_CONFIG,
+        )
+    except Exception as exc:
+        return {
+            "group_id": group_id,
+            "total": 0,
+            "active": 0,
+            "disabled": 0,
+            "manual": 0,
+            "self_learning": 0,
+            "strengthened": 0,
+            "content_hidden": True,
+            "error": type(exc).__name__,
+        }
+
+
 def build_admin_state(group_id: int | None = None) -> dict[str, Any]:
     selected_group_id = group_id if group_id is not None else TARGET_GROUP_ID
     now = time.time()
@@ -3404,6 +3425,8 @@ def build_admin_state(group_id: int | None = None) -> dict[str, Any]:
     )
     active_ocr_inflight_count = sum(1 for task in _ocr_inflight.values() if task is not None and not task.done())
     active_ocr_context_tasks = sum(1 for task in _ocr_context_tasks if task is not None and not task.done())
+    runtime_counters = admin_view.safe_counters(_runtime_counters)
+    reply_errors = admin_view.build_reply_error_summary(runtime_counters)
     return {
         "ok": True,
         "generated_at": datetime.fromtimestamp(now).isoformat(timespec="seconds"),
@@ -3426,7 +3449,7 @@ def build_admin_state(group_id: int | None = None) -> dict[str, Any]:
                 "direct_inflight_count": len(_direct_reply_inflight_groups),
                 "proactive_inflight_count": len(_proactive_inflight_groups),
             },
-            "counters": admin_view.safe_counters(_runtime_counters),
+            "counters": runtime_counters,
         },
         "model_routing": {
             "primary": primary_model,
@@ -3469,6 +3492,8 @@ def build_admin_state(group_id: int | None = None) -> dict[str, Any]:
             "max_reply_chars": MAX_REPLY_CHARS,
         },
         "groups": group_states,
+        "reply_errors": reply_errors,
+        "memory_management": _admin_memory_summary_for_group(selected_group_id),
         "context_composition": prompt_composition,
         "prompt_composition": prompt_composition,
         "safety": {
@@ -3493,6 +3518,104 @@ async def admin_page(req: Request) -> HTMLResponse:
 async def admin_state(req: Request, group_id: int | None = None) -> dict[str, Any]:
     require_admin_access(req)
     return build_admin_state(group_id)
+
+
+class AdminMemoryAddRequest(BaseModel):
+    group_id: int | None = None
+    entry_type: str = "memory"
+    text: str
+    weight: float = 1.0
+
+
+class AdminMemoryDeleteRequest(BaseModel):
+    group_id: int | None = None
+    entry_id: str
+    mode: str = "disable"
+
+
+class AdminMemoryStrengthenRequest(BaseModel):
+    group_id: int | None = None
+    entry_id: str
+    amount: int = 1
+
+
+def _admin_memory_group_id(group_id: int | None) -> int:
+    return admin_memory.group_id_or_default(group_id, target_group_id=TARGET_GROUP_ID)
+
+
+def _raise_admin_memory_error(exc: Exception) -> None:
+    if isinstance(exc, admin_memory.AdminMemoryNotFound):
+        raise HTTPException(status_code=404, detail="entry not found") from exc
+    if isinstance(exc, admin_memory.AdminMemoryError):
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    raise HTTPException(status_code=500, detail="admin memory operation failed") from exc
+
+
+@app.get("/admin/memory")
+async def admin_memory_list(req: Request, group_id: int | None = None) -> dict[str, Any]:
+    require_admin_access(req)
+    try:
+        gid = _admin_memory_group_id(group_id)
+        return admin_memory.list_memory_entries(
+            gid,
+            group_config_dir=GROUP_CONFIG_DIR,
+            config=SELF_LEARNING_CONFIG,
+        )
+    except Exception as exc:
+        _raise_admin_memory_error(exc)
+        return {"ok": False}
+
+
+@app.post("/admin/memory/add")
+async def admin_memory_add(req: Request, payload: AdminMemoryAddRequest) -> dict[str, Any]:
+    require_admin_access(req)
+    try:
+        gid = _admin_memory_group_id(payload.group_id)
+        return admin_memory.add_manual_entry(
+            gid,
+            entry_type=payload.entry_type,
+            text=payload.text,
+            weight=payload.weight,
+            group_config_dir=GROUP_CONFIG_DIR,
+            config=SELF_LEARNING_CONFIG,
+        )
+    except Exception as exc:
+        _raise_admin_memory_error(exc)
+        return {"ok": False}
+
+
+@app.post("/admin/memory/delete")
+async def admin_memory_delete(req: Request, payload: AdminMemoryDeleteRequest) -> dict[str, Any]:
+    require_admin_access(req)
+    try:
+        gid = _admin_memory_group_id(payload.group_id)
+        return admin_memory.delete_or_disable_entry(
+            gid,
+            entry_id=payload.entry_id,
+            mode=payload.mode,
+            group_config_dir=GROUP_CONFIG_DIR,
+            config=SELF_LEARNING_CONFIG,
+        )
+    except Exception as exc:
+        _raise_admin_memory_error(exc)
+        return {"ok": False}
+
+
+@app.post("/admin/memory/strengthen")
+async def admin_memory_strengthen(req: Request, payload: AdminMemoryStrengthenRequest) -> dict[str, Any]:
+    require_admin_access(req)
+    try:
+        gid = _admin_memory_group_id(payload.group_id)
+        return admin_memory.strengthen_entry(
+            gid,
+            entry_id=payload.entry_id,
+            amount=payload.amount,
+            group_config_dir=GROUP_CONFIG_DIR,
+            config=SELF_LEARNING_CONFIG,
+        )
+    except Exception as exc:
+        _raise_admin_memory_error(exc)
+        return {"ok": False}
 
 
 @app.get("/health")

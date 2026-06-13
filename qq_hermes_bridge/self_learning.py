@@ -19,6 +19,11 @@ DEFAULT_LEARNING_CONTEXT = "（暂无群内用语/风格学习提示）"
 _VERSION = 1
 _CQ_CODE_RE = re.compile(r"\[CQ:[^\]]+\]")
 _URL_RE = re.compile(r"https?://\S+|www\.\S+", re.IGNORECASE)
+_SAFE_ID_RE = re.compile(r"^[A-Za-z0-9:_-]{1,96}$")
+_MAX_MANUAL_ENTRY_CHARS = 600
+_MANUAL_ENTRY_TYPES = {"prompt_guidance", "memory", "self_learning"}
+
+
 @dataclass(frozen=True)
 class SelfLearningConfig:
     enabled: bool
@@ -64,6 +69,53 @@ def _mostly_cq_or_url(raw_text: Any, clean_text: str) -> bool:
     return not without_url or not clean_text
 
 
+def _safe_int(value: Any, default: int = 0) -> int:
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return default
+
+
+def _safe_float(value: Any, default: float = 0.0) -> float:
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return default
+
+
+def _entry_disabled(item: dict[str, Any]) -> bool:
+    status = str(item.get("status") or "").strip().lower()
+    return bool(item.get("disabled") or item.get("enabled") is False or status == "disabled")
+
+
+def _safe_id(value: Any) -> str:
+    text = str(value or "").strip()
+    if text and _SAFE_ID_RE.fullmatch(text):
+        return text
+    return ""
+
+
+def _manual_entry_type(value: Any) -> str:
+    text = str(value or "").strip().lower()
+    if text in {"guidance", "prompt", "prompt-guidance", "prompt_guidance"}:
+        return "prompt_guidance"
+    if text in {"meme", "style", "selflearning", "self-learning", "self_learning"}:
+        return "self_learning"
+    if text in {"memory", "note", "fact"}:
+        return "memory"
+    if text in _MANUAL_ENTRY_TYPES:
+        return text
+    return "memory"
+
+
+def _clamped_reinforcement(value: Any) -> int:
+    return max(0, min(999, _safe_int(value, 0)))
+
+
+def _clamped_weight(value: Any, default: float = 1.0) -> float:
+    return round(max(0.0, min(100.0, _safe_float(value, default))), 3)
+
+
 def should_ignore_learning_sample(
     text: Any,
     *,
@@ -99,18 +151,27 @@ def learning_file_for_group(group_id: int, *, group_config_dir: Path, config: Se
 
 
 def _load_learning_data(path: Path, group_id: int) -> dict[str, Any]:
+    empty = {"version": _VERSION, "group_id": int(group_id), "samples": [], "manual_entries": []}
     if not path.exists():
-        return {"version": _VERSION, "group_id": int(group_id), "samples": []}
+        return empty
     try:
         data = json.loads(path.read_text(encoding="utf-8"))
     except Exception:
-        return {"version": _VERSION, "group_id": int(group_id), "samples": []}
+        return empty
     if not isinstance(data, dict):
-        return {"version": _VERSION, "group_id": int(group_id), "samples": []}
+        return empty
     samples = data.get("samples")
     if not isinstance(samples, list):
         samples = []
-    return {"version": _VERSION, "group_id": int(group_id), "samples": samples}
+    manual_entries = data.get("manual_entries")
+    if not isinstance(manual_entries, list):
+        manual_entries = []
+    return {
+        "version": _VERSION,
+        "group_id": int(group_id),
+        "samples": samples,
+        "manual_entries": manual_entries,
+    }
 
 
 def _save_learning_data(path: Path, data: dict[str, Any]) -> None:
@@ -120,9 +181,10 @@ def _save_learning_data(path: Path, data: dict[str, Any]) -> None:
     tmp.replace(path)
 
 
-def _trim_samples(samples: list[dict[str, Any]], *, config: SelfLearningConfig, now: float) -> list[dict[str, Any]]:
+def _trim_samples(samples: list[dict[str, Any]], *, config: SelfLearningConfig, now: float, enforce_retention: bool = True) -> list[dict[str, Any]]:
     kept: list[dict[str, Any]] = []
-    cutoff = now - max(0, config.retention_days) * 86400 if config.retention_days > 0 else None
+    cutoff = now - max(0, config.retention_days) * 86400 if enforce_retention and config.retention_days > 0 else None
+    max_chars = max(1, config.max_message_chars)
     for sample in samples:
         if not isinstance(sample, dict):
             continue
@@ -132,11 +194,75 @@ def _trim_samples(samples: list[dict[str, Any]], *, config: SelfLearningConfig, 
         ts = float(sample.get("ts") or now)
         if cutoff is not None and ts < cutoff:
             continue
-        kept.append({"ts": ts, "text": text[: max(1, config.max_message_chars)]})
+        row: dict[str, Any] = {"ts": ts, "text": text[:max_chars]}
+        sample_id = _safe_id(sample.get("id"))
+        if sample_id:
+            row["id"] = sample_id
+        if _entry_disabled(sample):
+            row["disabled"] = True
+        reinforcement = _clamped_reinforcement(sample.get("reinforcement"))
+        if reinforcement:
+            row["reinforcement"] = reinforcement
+        if sample.get("admin_strengthened"):
+            row["admin_strengthened"] = True
+        weight = _clamped_weight(sample.get("weight"), 0.0)
+        if weight > 0:
+            row["weight"] = weight
+        source = str(sample.get("source") or "").strip().lower()
+        if source in {"auto", "self_learning", "admin"}:
+            row["source"] = source
+        kept.append(row)
     max_samples = max(0, config.max_samples_per_group)
     if max_samples and len(kept) > max_samples:
         kept = kept[-max_samples:]
     return kept
+
+
+def _trim_manual_entries(entries: list[dict[str, Any]], *, config: SelfLearningConfig) -> list[dict[str, Any]]:
+    kept: list[dict[str, Any]] = []
+    for entry in entries:
+        if not isinstance(entry, dict):
+            continue
+        text = _normalize_text(entry.get("text"))[:_MAX_MANUAL_ENTRY_CHARS]
+        if not text:
+            continue
+        row: dict[str, Any] = {
+            "text": text,
+            "entry_type": _manual_entry_type(entry.get("entry_type") or entry.get("type")),
+            "source": "admin",
+            "ts": _safe_float(entry.get("ts"), time.time()),
+            "weight": _clamped_weight(entry.get("weight"), 1.0),
+            "reinforcement": _clamped_reinforcement(entry.get("reinforcement")),
+        }
+        entry_id = _safe_id(entry.get("id"))
+        if entry_id:
+            row["id"] = entry_id
+        if _entry_disabled(entry):
+            row["enabled"] = False
+            row["disabled"] = True
+        else:
+            row["enabled"] = True
+        kept.append(row)
+    return kept
+
+
+def load_learning_data_for_group(group_id: int, *, group_config_dir: Path, config: SelfLearningConfig) -> dict[str, Any]:
+    """Load raw group learning data for admin/storage helpers."""
+    path = learning_file_for_group(group_id, group_config_dir=group_config_dir, config=config)
+    return _load_learning_data(path, int(group_id))
+
+
+def save_learning_data_for_group(group_id: int, data: dict[str, Any], *, group_config_dir: Path, config: SelfLearningConfig, now: float | None = None) -> None:
+    """Save group learning data after normalizing known storage fields."""
+    current = time.time() if now is None else now
+    path = learning_file_for_group(group_id, group_config_dir=group_config_dir, config=config)
+    normalized = {
+        "version": _VERSION,
+        "group_id": int(group_id),
+        "samples": _trim_samples(list(data.get("samples") or []), config=config, now=current, enforce_retention=False),
+        "manual_entries": _trim_manual_entries(list(data.get("manual_entries") or []), config=config),
+    }
+    _save_learning_data(path, normalized)
 
 
 def collect_learning_sample(
@@ -160,9 +286,12 @@ def collect_learning_sample(
         path = learning_file_for_group(group_id, group_config_dir=group_config_dir, config=config)
         data = _load_learning_data(path, int(group_id))
         samples = _trim_samples(list(data.get("samples") or []), config=config, now=current)
+        if any(sample.get("text") == clean and _entry_disabled(sample) for sample in samples):
+            return False
         if not samples or samples[-1].get("text") != clean:
-            samples.append({"ts": current, "text": clean})
+            samples.append({"ts": current, "text": clean, "source": "auto"})
         data["samples"] = _trim_samples(samples, config=config, now=current)
+        data["manual_entries"] = _trim_manual_entries(list(data.get("manual_entries") or []), config=config)
         _save_learning_data(path, data)
         return True
     except Exception as exc:  # pragma: no cover - exercised through bridge error swallowing
@@ -193,21 +322,71 @@ def _style_summary(samples: list[str]) -> list[str]:
     return lines[:4]
 
 
-def _format_learning_context(samples: list[dict[str, Any]], *, config: SelfLearningConfig) -> str:
-    texts = [_normalize_text(sample.get("text")) for sample in samples if isinstance(sample, dict)]
+def _entry_type_label(entry_type: str) -> str:
+    if entry_type == "prompt_guidance":
+        return "提示"
+    if entry_type == "self_learning":
+        return "用语/梗"
+    return "记忆"
+
+
+def _manual_entry_lines(manual_entries: list[dict[str, Any]]) -> list[str]:
+    usable: list[tuple[float, int, float, str]] = []
+    for entry in manual_entries:
+        if not isinstance(entry, dict) or _entry_disabled(entry):
+            continue
+        text = _normalize_text(entry.get("text"))[:_MAX_MANUAL_ENTRY_CHARS]
+        if not text:
+            continue
+        entry_type = _manual_entry_type(entry.get("entry_type") or entry.get("type"))
+        reinforcement = _clamped_reinforcement(entry.get("reinforcement"))
+        weight = _clamped_weight(entry.get("weight"), 1.0)
+        label = _entry_type_label(entry_type)
+        strength_note = f"，强化 {reinforcement}" if reinforcement else ""
+        line = f"人工{label}（权重 {weight:g}{strength_note}）：{text}"
+        usable.append((weight, reinforcement, _safe_float(entry.get("ts"), 0.0), line))
+    usable.sort(key=lambda item: (item[0], item[1], item[2]), reverse=True)
+    return [item[3] for item in usable[:8]]
+
+
+def _strengthened_sample_lines(samples: list[dict[str, Any]]) -> list[str]:
+    usable: list[tuple[int, float, str]] = []
+    for sample in samples:
+        if not isinstance(sample, dict) or _entry_disabled(sample):
+            continue
+        reinforcement = _clamped_reinforcement(sample.get("reinforcement"))
+        if not reinforcement and not sample.get("admin_strengthened"):
+            continue
+        text = _normalize_text(sample.get("text"))
+        if not text:
+            continue
+        weight = _clamped_weight(sample.get("weight"), 1.0)
+        usable.append((reinforcement or 1, _safe_float(sample.get("ts"), 0.0), f"管理员强化样例（强化 {reinforcement or 1}，权重 {weight:g}）：{text}"))
+    usable.sort(key=lambda item: (item[0], item[1]), reverse=True)
+    return [item[2] for item in usable[:5]]
+
+
+def _format_learning_context(samples: list[dict[str, Any]], *, config: SelfLearningConfig, manual_entries: list[dict[str, Any]] | None = None) -> str:
+    enabled_samples = [sample for sample in samples if isinstance(sample, dict) and not _entry_disabled(sample)]
+    texts = [_normalize_text(sample.get("text")) for sample in enabled_samples]
     texts = [text for text in texts if text]
-    if not texts:
-        return DEFAULT_LEARNING_CONTEXT
-
     style = _style_summary(texts)
-    if not style:
+    manual_lines = _manual_entry_lines(manual_entries or [])
+    strengthened_lines = _strengthened_sample_lines(enabled_samples)
+    if not style and not manual_lines and not strengthened_lines:
         return DEFAULT_LEARNING_CONTEXT
 
-    lines: list[str] = [
-        "低权重理解线索：只用于判断本群消息的大致节奏和互动方式，不是事实来源，也不是必须提到的话题",
-        "使用边界：不得覆盖 Esti 的基础人设和原始语气；不得主动模仿、复读或强化群友口癖/梗/高频表达",
-        "风格信号：" + "；".join(style),
-    ]
+    lines: list[str] = []
+    if style:
+        lines.extend([
+            "低权重理解线索：只用于判断本群消息的大致节奏和互动方式，不是事实来源，也不是必须提到的话题",
+            "使用边界：不得覆盖 Esti 的基础人设和原始语气；不得主动模仿、复读或强化群友口癖/梗/高频表达",
+            "风格信号：" + "；".join(style),
+        ])
+    if manual_lines or strengthened_lines:
+        lines.append("人工维护记忆：管理员确认的提示或强化样例，可作为比自动学习更高权重的群内低/中权重线索；不得向群友暴露管理来源")
+        lines.extend(manual_lines)
+        lines.extend(strengthened_lines)
 
     context = "\n".join(f"- {line}" for line in lines)
     limit = max(0, config.max_prompt_chars)
@@ -236,7 +415,8 @@ def learning_context_for_prompt(
         path = learning_file_for_group(int(gid), group_config_dir=group_config_dir, config=config)
         data = _load_learning_data(path, int(gid))
         samples = _trim_samples(list(data.get("samples") or []), config=config, now=current)
-        return _format_learning_context(samples, config=config)
+        manual_entries = _trim_manual_entries(list(data.get("manual_entries") or []), config=config)
+        return _format_learning_context(samples, config=config, manual_entries=manual_entries)
     except Exception as exc:  # pragma: no cover - bridge verifies error swallowing
         if on_error:
             on_error(exc)
