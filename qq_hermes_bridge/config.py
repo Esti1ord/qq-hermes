@@ -268,19 +268,13 @@ def load_config(base_dir: Path | None = None) -> Config:
     hermes_bin = os.getenv("HERMES_BIN", "/home/roxy/.local/bin/hermes")
     hermes_model = _env_first("PRIMARY_CHAT_MODEL", "HERMES_MODEL", default=config_utils.DEFAULT_PRIMARY_CHAT_MODEL)
     hermes_provider = _env_first("PRIMARY_CHAT_MODEL_PROVIDER", "HERMES_PROVIDER", default=config_utils.DEFAULT_PRIMARY_CHAT_PROVIDER)
-    hermes_provider_base_url = _env_first("PRIMARY_CHAT_MODEL_URL", "PRIMARY_CHAT_MODEL_BASE_URL", "HERMES_PROVIDER_BASE_URL")
-    hermes_api_key_env = _api_key_env_name(
-        explicit_names=("PRIMARY_CHAT_MODEL_API_KEY_ENV", "HERMES_API_KEY_ENV"),
-        raw_names=("PRIMARY_CHAT_MODEL_API_KEY", "PRIMARY_CHAT_MODEL_API", "HERMES_API_KEY"),
-    )
+    hermes_provider_base_url = _env_first(*config_utils.PRIMARY_CHAT_PROVIDER_URL_ENV_NAMES)
+    hermes_api_key_env = config_utils.api_key_env_name_from_groups(config_utils.PRIMARY_CHAT_API_KEY_ENV_GROUPS)
     hermes_fallback_enabled = config_utils.parse_bool(os.getenv("HERMES_FALLBACK_ENABLED", "true"))
     hermes_fallback_model = _env_first("VICE_CHAT_MODEL", "HERMES_FALLBACK_MODEL", default=config_utils.DEFAULT_FALLBACK_CHAT_MODEL)
     hermes_fallback_provider = _env_first("VICE_CHAT_MODEL_PROVIDER", "HERMES_FALLBACK_PROVIDER", default=config_utils.DEFAULT_FALLBACK_CHAT_PROVIDER)
-    hermes_fallback_provider_base_url = _env_first("VICE_CHAT_MODEL_URL", "VICE_CHAT_MODEL_BASE_URL", "HERMES_FALLBACK_PROVIDER_BASE_URL")
-    hermes_fallback_api_key_env = _api_key_env_name(
-        explicit_names=("VICE_CHAT_MODEL_API_KEY_ENV", "HERMES_FALLBACK_API_KEY_ENV"),
-        raw_names=("VICE_CHAT_MODEL_API_KEY", "VICE_CHAT_MODEL_API", "HERMES_FALLBACK_API_KEY"),
-    )
+    hermes_fallback_provider_base_url = _env_first(*config_utils.FALLBACK_CHAT_PROVIDER_URL_ENV_NAMES)
+    hermes_fallback_api_key_env = config_utils.api_key_env_name_from_groups(config_utils.FALLBACK_CHAT_API_KEY_ENV_GROUPS)
     hermes_model_by_group = config_utils.parse_group_str_map(os.getenv("HERMES_MODEL_BY_GROUP", ""))
     hermes_provider_by_group = config_utils.parse_group_str_map(os.getenv("HERMES_PROVIDER_BY_GROUP", ""))
     hermes_group_sessions_enabled = _bool_env("HERMES_GROUP_SESSIONS_ENABLED", "true")

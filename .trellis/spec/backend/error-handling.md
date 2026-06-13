@@ -134,8 +134,8 @@ Text generation env precedence:
 |---|---|---|
 | Primary text model | `PRIMARY_CHAT_MODEL` → `HERMES_MODEL` → `deepseekv4flash` | Default groups use this resolved value unless `HERMES_MODEL_BY_GROUP[group_id]` overrides it |
 | Primary text provider | `PRIMARY_CHAT_MODEL_PROVIDER` → `HERMES_PROVIDER` → `custom` | OpenAI-compatible direct HTTP is allowed for supported aliases when URL/API env are configured; otherwise this is passed to Hermes CLI after safe alias normalization |
-| Primary text URL | `PRIMARY_CHAT_MODEL_URL` → `PRIMARY_CHAT_MODEL_BASE_URL` → `HERMES_PROVIDER_BASE_URL` | Enables OpenAI-compatible direct HTTP for supported providers; never log it |
-| Primary text API key env name | explicit `PRIMARY_CHAT_MODEL_API_KEY_ENV` → `HERMES_API_KEY_ENV`, else raw-name detection on `PRIMARY_CHAT_MODEL_API_KEY` / `PRIMARY_CHAT_MODEL_API` / `HERMES_API_KEY` | Pass the env var name into the HTTP helper; do not copy or log the secret value |
+| Primary text URL | `PRIMARY_CHAT_MODEL_URL` → `PRIMARY_CHAT_MODEL_BASE_URL` → `CUSTOM_CHAT_MODEL_URL` → `CUSTOM_CHAT_MODEL_BASE_URL` → `CUSTOM_PROVIDER_URL` → `CUSTOM_PROVIDER_BASE_URL` → `HERMES_PROVIDER_BASE_URL` | Enables OpenAI-compatible direct HTTP for supported providers; custom-channel aliases are compatibility fallback only after canonical `PRIMARY_CHAT_*`; never log it |
+| Primary text API key env name | explicit/raw primary group first (`PRIMARY_CHAT_MODEL_API_KEY_ENV`, then raw-name detection on `PRIMARY_CHAT_MODEL_API_KEY` / `PRIMARY_CHAT_MODEL_API`) → explicit/raw custom-channel group (`CUSTOM_CHAT_MODEL_API_KEY_ENV` / `CUSTOM_PROVIDER_API_KEY_ENV` / `CUSTOM_API_KEY_ENV`, then raw-name detection on `CUSTOM_CHAT_MODEL_API_KEY` / `CUSTOM_CHAT_MODEL_API` / `CUSTOM_PROVIDER_API_KEY` / `CUSTOM_PROVIDER_API` / `CUSTOM_API_KEY` / `CUSTOM_API`) → explicit/raw legacy group (`HERMES_API_KEY_ENV`, then `HERMES_API_KEY`) | Pass the env var name into the HTTP helper; do not copy or log the secret value |
 | Fallback text model | `VICE_CHAT_MODEL` → `HERMES_FALLBACK_MODEL` → `deepseekv4flash` | Used only for retry after primary failure/empty output |
 | Fallback text provider | `VICE_CHAT_MODEL_PROVIDER` → `HERMES_FALLBACK_PROVIDER` → `deepseek` | Default fallback is official DeepSeek; legacy display label `官方` is normalized to Hermes provider `deepseek` |
 | Fallback text URL | `VICE_CHAT_MODEL_URL` → `VICE_CHAT_MODEL_BASE_URL` → `HERMES_FALLBACK_PROVIDER_BASE_URL` | Enables OpenAI-compatible fallback HTTP for supported providers; never log it |
@@ -219,6 +219,8 @@ instead of exposing provider details or rotating raw provider errors.
 |---|---|
 | `PRIMARY_CHAT_MODEL` and `HERMES_MODEL` are both set | Use `PRIMARY_CHAT_MODEL` |
 | `PRIMARY_CHAT_MODEL_PROVIDER` and `HERMES_PROVIDER` are both set | Use `PRIMARY_CHAT_MODEL_PROVIDER` |
+| `CUSTOM_CHAT_MODEL_*` / `CUSTOM_PROVIDER_*` and `HERMES_*` text URL/API aliases are both set | Use the custom-channel aliases for primary direct HTTP config, because they are more specific than legacy Hermes aliases |
+| `PRIMARY_CHAT_MODEL_*` and custom-channel text URL/API aliases are both set | Use the canonical `PRIMARY_CHAT_MODEL_*` aliases |
 | `VICE_CHAT_MODEL` and `HERMES_FALLBACK_MODEL` are both set | Use `VICE_CHAT_MODEL` |
 | Neither vice alias nor legacy text fallback is set | Use hard-coded text fallback defaults `deepseekv4flash` / `deepseek` |
 | Primary text provider is direct-compatible but URL or API env is missing | Use Hermes CLI path rather than direct HTTP |
@@ -270,6 +272,7 @@ instead of exposing provider details or rotating raw provider errors.
 - `tests/test_config_utils_module.py` must assert:
   - primary/vice text aliases win over legacy `HERMES_*` names;
   - primary/vice text URL and API env aliases resolve to direct HTTP config fields;
+  - custom-channel text URL/API aliases resolve only after canonical `PRIMARY_CHAT_*` and before legacy `HERMES_*` aliases;
   - primary/vice OCR aliases win over legacy `OCR_*` / `OCR_FALLBACK_*` names;
   - `IMAGE_MODEL_*` aliases feed the primary OCR block when canonical OCR aliases are unset;
   - raw text/OCR key envs resolve to env var names such as `PRIMARY_CHAT_MODEL_API`,
@@ -318,14 +321,9 @@ ocr_api_key_env = os.getenv("PRIMARY_OCR_MODEL_API", os.getenv("OCR_API_KEY_ENV"
 # Resolve aliases first, keep vice config fallback-only, and pass env names only.
 hermes_model = _env_first("PRIMARY_CHAT_MODEL", "HERMES_MODEL", default="deepseekv4flash")
 hermes_provider = _env_first("PRIMARY_CHAT_MODEL_PROVIDER", "HERMES_PROVIDER", default="custom")
-hermes_provider_base_url = _env_first(
-    "PRIMARY_CHAT_MODEL_URL",
-    "PRIMARY_CHAT_MODEL_BASE_URL",
-    "HERMES_PROVIDER_BASE_URL",
-)
-hermes_api_key_env = _api_key_env_name(
-    explicit_names=("PRIMARY_CHAT_MODEL_API_KEY_ENV", "HERMES_API_KEY_ENV"),
-    raw_names=("PRIMARY_CHAT_MODEL_API_KEY", "PRIMARY_CHAT_MODEL_API", "HERMES_API_KEY"),
+hermes_provider_base_url = _env_first(*config_utils.PRIMARY_CHAT_PROVIDER_URL_ENV_NAMES)
+hermes_api_key_env = config_utils.api_key_env_name_from_groups(
+    config_utils.PRIMARY_CHAT_API_KEY_ENV_GROUPS
 )
 hermes_fallback_model = _env_first(
     "VICE_CHAT_MODEL",

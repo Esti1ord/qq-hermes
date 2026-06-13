@@ -163,7 +163,7 @@ VICE_CHAT_MODEL_PROVIDER=deepseek
 VICE_CHAT_MODEL=deepseekv4flash
 ```
 
-推荐优先使用 `PRIMARY_CHAT_MODEL` / `PRIMARY_CHAT_MODEL_PROVIDER` 和 `VICE_CHAT_MODEL` / `VICE_CHAT_MODEL_PROVIDER`。旧键 `HERMES_MODEL` / `HERMES_PROVIDER` / `HERMES_FALLBACK_MODEL` / `HERMES_FALLBACK_PROVIDER` 仍兼容。主文本 provider 为 `custom`、`model`、`openai`、`openai_compatible`、`openai-gpt`、`axonhub`、`siliconflow` 等 OpenAI-compatible 别名，并且配置了 `PRIMARY_CHAT_MODEL_BASE_URL` 或 `PRIMARY_CHAT_MODEL_URL` 以及 API-key env 名时，Bridge 会直接请求 `/chat/completions`；否则继续走 Hermes CLI。fallback 默认使用 Hermes provider `deepseek`，旧显示名 `官方` 会安全归一化为 `deepseek`。URL、API key env 名和值、prompt 和模型输出都不应写进日志、issue、聊天或提交记录。
+推荐优先使用 `PRIMARY_CHAT_MODEL` / `PRIMARY_CHAT_MODEL_PROVIDER` 和 `VICE_CHAT_MODEL` / `VICE_CHAT_MODEL_PROVIDER`。旧键 `HERMES_MODEL` / `HERMES_PROVIDER` / `HERMES_FALLBACK_MODEL` / `HERMES_FALLBACK_PROVIDER` 仍兼容。主文本 provider 为 `custom`、`model`、`openai`、`openai_compatible`、`openai-gpt`、`axonhub`、`siliconflow` 等 OpenAI-compatible 别名，并且配置了 `PRIMARY_CHAT_MODEL_BASE_URL` 或 `PRIMARY_CHAT_MODEL_URL` 以及 API-key env 名时，Bridge 会直接请求 `/chat/completions`；如果已有自定义通道配置使用 `CUSTOM_CHAT_MODEL_BASE_URL` / `CUSTOM_CHAT_MODEL_URL` / `CUSTOM_PROVIDER_BASE_URL` / `CUSTOM_PROVIDER_URL` 与 `CUSTOM_CHAT_MODEL_API_KEY` / `CUSTOM_CHAT_MODEL_API` / `CUSTOM_API_KEY` 等别名，也会在 canonical `PRIMARY_CHAT_*` 未设置时生效。否则继续走 Hermes CLI。fallback 默认使用 Hermes provider `deepseek`，旧显示名 `官方` 会安全归一化为 `deepseek`。URL、API key env 名和值、prompt 和模型输出都不应写进日志、issue、聊天或提交记录。
 
 修改 `.env` 后通常需要重启 bridge 才会生效。
 
@@ -285,7 +285,7 @@ HTTP client: http://<bridge-host>:18765/onebot, reportSelfMessage=true, messageP
 
 Bridge 支持两种文本生成路径：
 
-1. OpenAI-compatible direct HTTP：当主 provider 是 `custom` / `model` / `openai` / `openai_compatible` / `openai-gpt` / `axonhub` / `siliconflow` 等别名，并且配置了 URL 与 API-key env 名时使用；
+1. OpenAI-compatible direct HTTP：当主 provider 是 `custom` / `model` / `openai` / `openai_compatible` / `openai-gpt` / `axonhub` / `siliconflow` 等别名，并且配置了 URL 与 API-key env 名时使用；`PRIMARY_CHAT_*` 优先，也兼容常见 `CUSTOM_CHAT_MODEL_*` / `CUSTOM_PROVIDER_*` / `CUSTOM_API_KEY` 自定义通道别名；
 2. Hermes CLI：未配置 direct HTTP，或 provider 需要 Hermes CLI/session 时使用。
 
 普通群聊建议启用 Hermes 持久 group session，让 CLI 路径能延续同一群的上下文。direct HTTP 路径只发送本次 prompt，不使用 Hermes group session。
@@ -318,7 +318,7 @@ HERMES_GROUP_SESSIONS_ENABLED=true
 HERMES_GROUP_SESSION_PREFIX=qq-group
 ```
 
-`PRIMARY_CHAT_MODEL_API_KEY_ENV` 配的是“环境变量名”，不是 key 本身。也可以直接设置 raw alias `PRIMARY_CHAT_MODEL_API` 或 `PRIMARY_CHAT_MODEL_API_KEY`，Bridge 会把这个变量名传给运行时并在发起请求时读取其中的值；不要把真实 key 写入文档、日志或提交记录。
+`PRIMARY_CHAT_MODEL_API_KEY_ENV` 配的是“环境变量名”，不是 key 本身。也可以直接设置 raw alias `PRIMARY_CHAT_MODEL_API` 或 `PRIMARY_CHAT_MODEL_API_KEY`，Bridge 会把这个变量名传给运行时并在发起请求时读取其中的值；自定义通道还兼容 `CUSTOM_CHAT_MODEL_API_KEY_ENV` / `CUSTOM_CHAT_MODEL_API_KEY` / `CUSTOM_CHAT_MODEL_API` / `CUSTOM_PROVIDER_API_KEY_ENV` / `CUSTOM_API_KEY_ENV` / `CUSTOM_API_KEY` 等别名。不要把真实 key 写入文档、日志或提交记录。
 
 如果你只想走 Hermes CLI，可以不设置 `PRIMARY_CHAT_MODEL_BASE_URL` / `PRIMARY_CHAT_MODEL_URL` 和 API-key env 名；此时仍会按 `--model` / `--provider` 调用 Hermes。
 

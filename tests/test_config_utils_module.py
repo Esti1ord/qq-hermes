@@ -132,6 +132,63 @@ def test_load_config_prefers_primary_and_vice_aliases_over_legacy_envs(tmp_path,
     assert loaded.ocr_fallback_api_key_env == "VICE_OCR_MODEL_API"
 
 
+def test_load_config_supports_custom_chat_aliases_for_primary_text(tmp_path, monkeypatch):
+    monkeypatch.setenv("GROUP_IDS", "975805598")
+    for name in (
+        "PRIMARY_CHAT_MODEL_URL",
+        "PRIMARY_CHAT_MODEL_BASE_URL",
+        "PRIMARY_CHAT_MODEL_API_KEY_ENV",
+        "PRIMARY_CHAT_MODEL_API_KEY",
+        "PRIMARY_CHAT_MODEL_API",
+        "CUSTOM_CHAT_MODEL_URL",
+        "CUSTOM_CHAT_MODEL_API_KEY_ENV",
+        "CUSTOM_CHAT_MODEL_API_KEY",
+        "CUSTOM_PROVIDER_URL",
+        "CUSTOM_PROVIDER_BASE_URL",
+        "CUSTOM_PROVIDER_API_KEY_ENV",
+        "CUSTOM_PROVIDER_API_KEY",
+        "CUSTOM_PROVIDER_API",
+        "CUSTOM_API_KEY_ENV",
+        "CUSTOM_API_KEY",
+        "CUSTOM_API",
+        "HERMES_PROVIDER_BASE_URL",
+        "HERMES_API_KEY_ENV",
+        "HERMES_API_KEY",
+    ):
+        monkeypatch.delenv(name, raising=False)
+    monkeypatch.setenv("PRIMARY_CHAT_MODEL_PROVIDER", "custom")
+    monkeypatch.setenv("PRIMARY_CHAT_MODEL", "custom-chat-model")
+    monkeypatch.setenv("CUSTOM_CHAT_MODEL_BASE_URL", "https://custom-chat.example.test/v1")
+    monkeypatch.setenv("CUSTOM_CHAT_MODEL_API", "dummy-custom-chat-key")
+
+    loaded = bridge_config.load_config(tmp_path)
+
+    assert loaded.hermes_provider == "custom"
+    assert loaded.hermes_model == "custom-chat-model"
+    assert loaded.hermes_provider_base_url == "https://custom-chat.example.test/v1"
+    assert loaded.hermes_api_key_env == "CUSTOM_CHAT_MODEL_API"
+
+
+def test_load_config_prefers_primary_chat_aliases_over_custom_aliases(tmp_path, monkeypatch):
+    monkeypatch.setenv("GROUP_IDS", "975805598")
+    monkeypatch.setenv("PRIMARY_CHAT_MODEL_PROVIDER", "custom")
+    monkeypatch.setenv("PRIMARY_CHAT_MODEL", "primary-chat-model")
+    monkeypatch.setenv("PRIMARY_CHAT_MODEL_URL", "")
+    monkeypatch.setenv("PRIMARY_CHAT_MODEL_API_KEY_ENV", "")
+    monkeypatch.setenv("PRIMARY_CHAT_MODEL_API_KEY", "")
+    monkeypatch.setenv("PRIMARY_CHAT_MODEL_BASE_URL", "https://primary-chat.example.test/v1")
+    monkeypatch.setenv("PRIMARY_CHAT_MODEL_API", "dummy-primary-chat-key")
+    monkeypatch.setenv("CUSTOM_CHAT_MODEL_URL", "https://custom-chat.example.test/v1")
+    monkeypatch.setenv("CUSTOM_CHAT_MODEL_API", "dummy-custom-chat-key")
+    monkeypatch.setenv("HERMES_PROVIDER_BASE_URL", "https://legacy-chat.example.test/v1")
+    monkeypatch.setenv("HERMES_API_KEY_ENV", "LEGACY_CHAT_KEY")
+
+    loaded = bridge_config.load_config(tmp_path)
+
+    assert loaded.hermes_provider_base_url == "https://primary-chat.example.test/v1"
+    assert loaded.hermes_api_key_env == "PRIMARY_CHAT_MODEL_API"
+
+
 def test_load_config_supports_local_image_model_aliases_for_primary_ocr(tmp_path, monkeypatch):
     monkeypatch.setenv("GROUP_IDS", "975805598")
     monkeypatch.delenv("PRIMARY_OCR_MODEL_PROVIDER", raising=False)
@@ -185,6 +242,19 @@ def test_load_config_includes_text_and_ocr_fallback_defaults(tmp_path, monkeypat
         "PRIMARY_CHAT_MODEL_API_KEY_ENV",
         "PRIMARY_CHAT_MODEL_API_KEY",
         "PRIMARY_CHAT_MODEL_API",
+        "CUSTOM_CHAT_MODEL_URL",
+        "CUSTOM_CHAT_MODEL_BASE_URL",
+        "CUSTOM_PROVIDER_URL",
+        "CUSTOM_PROVIDER_BASE_URL",
+        "CUSTOM_CHAT_MODEL_API_KEY_ENV",
+        "CUSTOM_CHAT_MODEL_API_KEY",
+        "CUSTOM_CHAT_MODEL_API",
+        "CUSTOM_PROVIDER_API_KEY_ENV",
+        "CUSTOM_PROVIDER_API_KEY",
+        "CUSTOM_PROVIDER_API",
+        "CUSTOM_API_KEY_ENV",
+        "CUSTOM_API_KEY",
+        "CUSTOM_API",
         "HERMES_MODEL",
         "HERMES_PROVIDER",
         "HERMES_PROVIDER_BASE_URL",

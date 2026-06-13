@@ -391,6 +391,73 @@ def test_build_hermes_cmd_maps_official_chinese_provider_alias_to_deepseek():
     assert cmd[cmd.index("--provider") + 1] == "deepseek"
 
 
+def test_bridge_import_custom_chat_aliases_activate_direct_http(monkeypatch):
+    monkeypatch.setenv("PRIMARY_CHAT_MODEL_PROVIDER", "custom")
+    monkeypatch.setenv("PRIMARY_CHAT_MODEL", "custom-chat-model")
+    monkeypatch.setenv("PRIMARY_CHAT_MODEL_URL", "")
+    monkeypatch.setenv("PRIMARY_CHAT_MODEL_BASE_URL", "")
+    monkeypatch.setenv("PRIMARY_CHAT_MODEL_API_KEY_ENV", "")
+    monkeypatch.setenv("PRIMARY_CHAT_MODEL_API_KEY", "")
+    monkeypatch.setenv("PRIMARY_CHAT_MODEL_API", "")
+    monkeypatch.setenv("CUSTOM_CHAT_MODEL_URL", "https://custom-chat.example.test/v1")
+    monkeypatch.setenv("CUSTOM_CHAT_MODEL_API_KEY", "dummy-custom-chat-key")
+    monkeypatch.setenv("HERMES_PROVIDER_BASE_URL", "https://legacy-chat.example.test/v1")
+    monkeypatch.setenv("HERMES_API_KEY_ENV", "LEGACY_TEXT_KEY")
+
+    bridge = load_bridge_module()
+
+    config = bridge.primary_text_http_config_for_group(781423661)
+    assert config == {
+        "model": "custom-chat-model",
+        "provider": "custom",
+        "base_url": "https://custom-chat.example.test/v1",
+        "api_key_env": "CUSTOM_CHAT_MODEL_API_KEY",
+    }
+
+
+def test_run_hermes_imported_custom_aliases_use_direct_http_safely(monkeypatch):
+    monkeypatch.setenv("PRIMARY_CHAT_MODEL_PROVIDER", "custom")
+    monkeypatch.setenv("PRIMARY_CHAT_MODEL", "custom-chat-model")
+    monkeypatch.setenv("PRIMARY_CHAT_MODEL_URL", "")
+    monkeypatch.setenv("PRIMARY_CHAT_MODEL_BASE_URL", "")
+    monkeypatch.setenv("PRIMARY_CHAT_MODEL_API_KEY_ENV", "")
+    monkeypatch.setenv("PRIMARY_CHAT_MODEL_API_KEY", "")
+    monkeypatch.setenv("PRIMARY_CHAT_MODEL_API", "")
+    monkeypatch.setenv("CUSTOM_CHAT_MODEL_URL", "")
+    monkeypatch.setenv("CUSTOM_CHAT_MODEL_API_KEY_ENV", "")
+    monkeypatch.setenv("CUSTOM_CHAT_MODEL_API_KEY", "")
+    monkeypatch.setenv("CUSTOM_CHAT_MODEL_BASE_URL", "https://custom-chat.example.test/v1")
+    monkeypatch.setenv("CUSTOM_CHAT_MODEL_API", "dummy-custom-chat-key")
+
+    bridge = load_bridge_module()
+    bridge.HERMES_MODEL_BY_GROUP = {}
+    bridge.HERMES_PROVIDER_BY_GROUP = {}
+    bridge.HERMES_FALLBACK_ENABLED = False
+    logs = []
+    calls = []
+
+    def fake_http(prompt, **kwargs):
+        calls.append({"prompt": prompt, **kwargs})
+        return {"ok": True, "text": "custom direct answer", "reason": ""}
+
+    monkeypatch.setattr(bridge, "log", lambda event: logs.append(event))
+    monkeypatch.setattr(bridge.hermes_runtime, "run_openai_compatible_chat_completion", fake_http)
+    monkeypatch.setattr(bridge.subprocess, "run", lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("CLI should not run")))
+
+    assert bridge.run_hermes_raw("SECRET_PROMPT", group_id=781423661) == "custom direct answer"
+
+    assert len(calls) == 1
+    assert calls[0]["base_url"] == "https://custom-chat.example.test/v1"
+    assert calls[0]["api_key_env"] == "CUSTOM_CHAT_MODEL_API"
+    assert calls[0]["model"] == "custom-chat-model"
+    rendered_logs = repr(logs)
+    assert "SECRET_PROMPT" not in rendered_logs
+    assert "https://custom-chat.example.test" not in rendered_logs
+    assert "CUSTOM_CHAT_MODEL_API" not in rendered_logs
+    assert any(item.get("type") == "text_http_start" for item in logs)
+    assert any(item.get("type") == "text_http_result" for item in logs)
+
+
 def test_run_hermes_uses_direct_http_primary_when_url_and_api_env_configured(monkeypatch):
     bridge = load_bridge_module()
     bridge.HERMES_MODEL = "custom-deepseek"
