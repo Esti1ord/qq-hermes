@@ -311,7 +311,7 @@ def test_run_hermes_uses_no_session_fallback_model_when_primary_fails(monkeypatc
     assert "--continue" in calls[0]
     assert "--continue" not in calls[1]
     assert calls[1][calls[1].index("--model") + 1] == "deepseekv4flash"
-    assert calls[1][calls[1].index("--provider") + 1] == "官方"
+    assert calls[1][calls[1].index("--provider") + 1] == "deepseek"
 
 
 def test_run_hermes_uses_fallback_for_empty_primary_output(monkeypatch):
@@ -356,6 +356,202 @@ def test_run_hermes_skips_fallback_when_same_as_active_primary(monkeypatch):
     bridge.HERMES_FALLBACK_ENABLED = True
     bridge.HERMES_FALLBACK_MODEL = "deepseekv4flash"
     bridge.HERMES_FALLBACK_PROVIDER = "官方"
+    bridge.HERMES_GROUP_SESSIONS_ENABLED = False
+    calls = []
+
+    class FakeCompleted:
+        returncode = 1
+        stdout = ""
+        stderr = "down"
+
+    def fake_run(cmd, **kwargs):
+        calls.append(cmd)
+        return FakeCompleted()
+
+    monkeypatch.setattr(bridge.subprocess, "run", fake_run)
+
+    result = bridge.run_hermes_raw_result("prompt", group_id=781423661)
+
+    assert result["ok"] is False
+    assert result["reason"] == "hermes_nonzero"
+    assert len(calls) == 1
+
+
+def test_build_hermes_cmd_maps_official_chinese_provider_alias_to_deepseek():
+    bridge = load_bridge_module()
+    bridge.HERMES_BIN = "hermes"
+    bridge.HERMES_MODEL = "deepseek-v4-flash"
+    bridge.HERMES_PROVIDER = "官方"
+    bridge.HERMES_MODEL_BY_GROUP = {}
+    bridge.HERMES_PROVIDER_BY_GROUP = {}
+    bridge.HERMES_GROUP_SESSIONS_ENABLED = False
+
+    cmd = bridge.build_hermes_cmd("prompt", group_id=781423661)
+
+    assert cmd[cmd.index("--provider") + 1] == "deepseek"
+
+
+def test_bridge_import_custom_chat_aliases_activate_direct_http(monkeypatch):
+    monkeypatch.setenv("PRIMARY_CHAT_MODEL_PROVIDER", "custom")
+    monkeypatch.setenv("PRIMARY_CHAT_MODEL", "custom-chat-model")
+    monkeypatch.setenv("PRIMARY_CHAT_MODEL_URL", "")
+    monkeypatch.setenv("PRIMARY_CHAT_MODEL_BASE_URL", "")
+    monkeypatch.setenv("PRIMARY_CHAT_MODEL_API_KEY_ENV", "")
+    monkeypatch.setenv("PRIMARY_CHAT_MODEL_API_KEY", "")
+    monkeypatch.setenv("PRIMARY_CHAT_MODEL_API", "")
+    monkeypatch.setenv("CUSTOM_CHAT_MODEL_URL", "https://custom-chat.example.test/v1")
+    monkeypatch.setenv("CUSTOM_CHAT_MODEL_API_KEY", "dummy-custom-chat-key")
+    monkeypatch.setenv("HERMES_PROVIDER_BASE_URL", "https://legacy-chat.example.test/v1")
+    monkeypatch.setenv("HERMES_API_KEY_ENV", "LEGACY_TEXT_KEY")
+
+    bridge = load_bridge_module()
+
+    config = bridge.primary_text_http_config_for_group(781423661)
+    assert config == {
+        "model": "custom-chat-model",
+        "provider": "custom",
+        "base_url": "https://custom-chat.example.test/v1",
+        "api_key_env": "CUSTOM_CHAT_MODEL_API_KEY",
+    }
+
+
+def test_run_hermes_imported_custom_aliases_use_direct_http_safely(monkeypatch):
+    monkeypatch.setenv("PRIMARY_CHAT_MODEL_PROVIDER", "custom")
+    monkeypatch.setenv("PRIMARY_CHAT_MODEL", "custom-chat-model")
+    monkeypatch.setenv("PRIMARY_CHAT_MODEL_URL", "")
+    monkeypatch.setenv("PRIMARY_CHAT_MODEL_BASE_URL", "")
+    monkeypatch.setenv("PRIMARY_CHAT_MODEL_API_KEY_ENV", "")
+    monkeypatch.setenv("PRIMARY_CHAT_MODEL_API_KEY", "")
+    monkeypatch.setenv("PRIMARY_CHAT_MODEL_API", "")
+    monkeypatch.setenv("CUSTOM_CHAT_MODEL_URL", "")
+    monkeypatch.setenv("CUSTOM_CHAT_MODEL_API_KEY_ENV", "")
+    monkeypatch.setenv("CUSTOM_CHAT_MODEL_API_KEY", "")
+    monkeypatch.setenv("CUSTOM_CHAT_MODEL_BASE_URL", "https://custom-chat.example.test/v1")
+    monkeypatch.setenv("CUSTOM_CHAT_MODEL_API", "dummy-custom-chat-key")
+
+    bridge = load_bridge_module()
+    bridge.HERMES_MODEL_BY_GROUP = {}
+    bridge.HERMES_PROVIDER_BY_GROUP = {}
+    bridge.HERMES_FALLBACK_ENABLED = False
+    logs = []
+    calls = []
+
+    def fake_http(prompt, **kwargs):
+        calls.append({"prompt": prompt, **kwargs})
+        return {"ok": True, "text": "custom direct answer", "reason": ""}
+
+    monkeypatch.setattr(bridge, "log", lambda event: logs.append(event))
+    monkeypatch.setattr(bridge.hermes_runtime, "run_openai_compatible_chat_completion", fake_http)
+    monkeypatch.setattr(bridge.subprocess, "run", lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("CLI should not run")))
+
+    assert bridge.run_hermes_raw("SECRET_PROMPT", group_id=781423661) == "custom direct answer"
+
+    assert len(calls) == 1
+    assert calls[0]["base_url"] == "https://custom-chat.example.test/v1"
+    assert calls[0]["api_key_env"] == "CUSTOM_CHAT_MODEL_API"
+    assert calls[0]["model"] == "custom-chat-model"
+    rendered_logs = repr(logs)
+    assert "SECRET_PROMPT" not in rendered_logs
+    assert "https://custom-chat.example.test" not in rendered_logs
+    assert "CUSTOM_CHAT_MODEL_API" not in rendered_logs
+    assert any(item.get("type") == "text_http_start" for item in logs)
+    assert any(item.get("type") == "text_http_result" for item in logs)
+
+
+def test_run_hermes_uses_direct_http_primary_when_url_and_api_env_configured(monkeypatch):
+    bridge = load_bridge_module()
+    bridge.HERMES_MODEL = "custom-deepseek"
+    bridge.HERMES_PROVIDER = "custom"
+    bridge.HERMES_PROVIDER_BASE_URL = "https://chat.example.test/v1"
+    bridge.HERMES_API_KEY_ENV = "TEXT_API_KEY"
+    bridge.HERMES_MODEL_BY_GROUP = {}
+    bridge.HERMES_PROVIDER_BY_GROUP = {}
+    bridge.HERMES_FALLBACK_ENABLED = False
+    bridge.HERMES_GROUP_SESSIONS_ENABLED = True
+    logs = []
+    calls = []
+
+    def fake_http(prompt, **kwargs):
+        calls.append({"prompt": prompt, **kwargs})
+        return {"ok": True, "text": "direct answer", "reason": ""}
+
+    monkeypatch.setattr(bridge, "log", lambda event: logs.append(event))
+    monkeypatch.setattr(bridge.hermes_runtime, "run_openai_compatible_chat_completion", fake_http)
+    monkeypatch.setattr(bridge.subprocess, "run", lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("CLI should not run")))
+
+    assert bridge.run_hermes_raw("SECRET_PROMPT", group_id=781423661) == "direct answer"
+
+    assert len(calls) == 1
+    assert calls[0]["base_url"] == "https://chat.example.test/v1"
+    assert calls[0]["model"] == "custom-deepseek"
+    assert calls[0]["api_key_env"] == "TEXT_API_KEY"
+    assert calls[0]["prompt"] == "SECRET_PROMPT"
+    rendered_logs = repr(logs)
+    assert "SECRET_PROMPT" not in rendered_logs
+    assert "https://chat.example.test" not in rendered_logs
+    assert "TEXT_API_KEY" not in rendered_logs
+    assert any(item.get("type") == "text_http_start" for item in logs)
+    assert any(item.get("type") == "text_http_result" for item in logs)
+
+
+def test_run_hermes_uses_direct_http_fallback_without_group_session(monkeypatch):
+    bridge = load_bridge_module()
+    bridge.HERMES_BIN = "hermes"
+    bridge.HERMES_MODEL = "primary-model"
+    bridge.HERMES_PROVIDER = "deepseek"
+    bridge.HERMES_PROVIDER_BASE_URL = ""
+    bridge.HERMES_API_KEY_ENV = ""
+    bridge.HERMES_MODEL_BY_GROUP = {}
+    bridge.HERMES_PROVIDER_BY_GROUP = {}
+    bridge.HERMES_FALLBACK_ENABLED = True
+    bridge.HERMES_FALLBACK_MODEL = "fallback-model"
+    bridge.HERMES_FALLBACK_PROVIDER = "custom"
+    bridge.HERMES_FALLBACK_PROVIDER_BASE_URL = "https://fallback.example.test/v1"
+    bridge.HERMES_FALLBACK_API_KEY_ENV = "FALLBACK_TEXT_API_KEY"
+    bridge.HERMES_GROUP_SESSIONS_ENABLED = True
+    bridge.HERMES_SESSION_AUTOCOMPACT_ENABLED = False
+    cli_calls = []
+    http_calls = []
+
+    class FakeFailed:
+        returncode = 1
+        stdout = ""
+        stderr = "down"
+
+    def fake_run(cmd, **kwargs):
+        cli_calls.append(cmd)
+        return FakeFailed()
+
+    def fake_http(prompt, **kwargs):
+        http_calls.append({"prompt": prompt, **kwargs})
+        return {"ok": True, "text": "fallback via http", "reason": ""}
+
+    monkeypatch.setattr(bridge.subprocess, "run", fake_run)
+    monkeypatch.setattr(bridge.hermes_runtime, "run_openai_compatible_chat_completion", fake_http)
+
+    assert bridge.run_hermes_raw("prompt", group_id=781423661) == "fallback via http"
+
+    assert len(cli_calls) == 1
+    assert "--continue" in cli_calls[0]
+    assert len(http_calls) == 1
+    assert http_calls[0]["base_url"] == "https://fallback.example.test/v1"
+    assert http_calls[0]["api_key_env"] == "FALLBACK_TEXT_API_KEY"
+
+
+def test_run_hermes_skips_fallback_when_same_after_provider_normalization(monkeypatch):
+    bridge = load_bridge_module()
+    bridge.HERMES_BIN = "hermes"
+    bridge.HERMES_MODEL = "deepseekv4flash"
+    bridge.HERMES_PROVIDER = "deepseek"
+    bridge.HERMES_PROVIDER_BASE_URL = ""
+    bridge.HERMES_API_KEY_ENV = ""
+    bridge.HERMES_MODEL_BY_GROUP = {}
+    bridge.HERMES_PROVIDER_BY_GROUP = {}
+    bridge.HERMES_FALLBACK_ENABLED = True
+    bridge.HERMES_FALLBACK_MODEL = "deepseekv4flash"
+    bridge.HERMES_FALLBACK_PROVIDER = "官方"
+    bridge.HERMES_FALLBACK_PROVIDER_BASE_URL = ""
+    bridge.HERMES_FALLBACK_API_KEY_ENV = ""
     bridge.HERMES_GROUP_SESSIONS_ENABLED = False
     calls = []
 

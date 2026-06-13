@@ -13,10 +13,10 @@ from pathlib import Path
 import subprocess
 import tempfile
 from typing import Any, Callable, Protocol
-from urllib.parse import urlsplit, urlunsplit
 
 import httpx
 
+from . import openai_compat
 from .media import MediaRecognition
 from .media_fetch import MediaFetchResult
 
@@ -275,53 +275,11 @@ def build_openai_compatible_vision_request(
 
 
 def normalize_chat_completions_url(base_url: str) -> str:
-    raw = str(base_url or "").strip()
-    if not raw:
-        return ""
-    parts = urlsplit(raw)
-    path = parts.path.rstrip("/")
-    if not path.lower().endswith("/chat/completions"):
-        path = f"{path}/chat/completions" if path else "/chat/completions"
-    return urlunsplit((parts.scheme, parts.netloc, path, parts.query, parts.fragment))
+    return openai_compat.normalize_chat_completions_url(base_url)
 
 
 def extract_openai_compatible_text(payload: Any) -> str:
-    if not isinstance(payload, dict):
-        return ""
-    choices = payload.get("choices")
-    if not isinstance(choices, list) or not choices:
-        return ""
-    first = choices[0]
-    if not isinstance(first, dict):
-        return ""
-    message = first.get("message")
-    if isinstance(message, dict):
-        return _content_text(message.get("content"))
-    return _content_text(first.get("text"))
-
-
-def _content_text(content: Any) -> str:
-    if isinstance(content, str):
-        return content.strip()
-    if isinstance(content, list):
-        parts: list[str] = []
-        for item in content:
-            if isinstance(item, str):
-                value = item.strip()
-            elif isinstance(item, dict):
-                raw_text = item.get("text")
-                if isinstance(raw_text, str):
-                    value = raw_text.strip()
-                elif isinstance(raw_text, dict) and isinstance(raw_text.get("value"), str):
-                    value = str(raw_text.get("value") or "").strip()
-                else:
-                    value = ""
-            else:
-                value = ""
-            if value:
-                parts.append(value)
-        return "\n".join(parts).strip()
-    return ""
+    return openai_compat.extract_chat_text(payload)
 
 
 def max_tokens_for_result_chars(max_chars: int) -> int:

@@ -681,6 +681,67 @@ def test_build_ocr_provider_prefers_primary_ocr_aliases_and_raw_api_env_name(mon
     assert provider.api_key_env == "PRIMARY_OCR_MODEL_API"
 
 
+def test_build_ocr_provider_supports_local_image_model_aliases(monkeypatch):
+    for name in (
+        "PRIMARY_OCR_MODEL_PROVIDER",
+        "PRIMARY_OCR_MODEL",
+        "PRIMARY_OCR_MODEL_URL",
+        "PRIMARY_OCR_MODEL_BASE_URL",
+        "PRIMARY_OCR_MODEL_API",
+        "PRIMARY_OCR_MODEL_API_KEY",
+        "PRIMARY_OCR_MODEL_API_KEY_ENV",
+    ):
+        monkeypatch.setenv(name, "")
+    monkeypatch.setenv("IMAGE_MODEL_PROVIDER", "custom")
+    monkeypatch.setenv("IMAGE_MODEL", "local-mimo")
+    monkeypatch.setenv("IMAGE_MODEL_URL", "https://image.example.test/v1")
+    monkeypatch.setenv("IMAGE_MODEL_API", "dummy-image-value")
+    monkeypatch.setenv("IMAGE_MODEL_API_KEY", "")
+    monkeypatch.setenv("IMAGE_MODEL_API_KEY_ENV", "")
+    monkeypatch.setenv("OCR_API_KEY", "")
+    monkeypatch.setenv("OCR_API_KEY_ENV", "LEGACY_VISION_KEY")
+
+    bridge = load_bridge_module()
+    bridge.OCR_ENABLED = True
+    bridge.OCR_EXTERNAL_PROVIDER_ALLOWED = True
+
+    provider = bridge.build_ocr_provider()
+
+    assert isinstance(provider, vision.ModelVisionProvider)
+    assert provider.model == "local-mimo"
+    assert provider.base_url == "https://image.example.test/v1"
+    assert provider.api_key_env == "IMAGE_MODEL_API"
+
+
+def test_build_ocr_provider_uses_custom_mimo_defaults(monkeypatch):
+    for name in (
+        "PRIMARY_OCR_MODEL_PROVIDER",
+        "PRIMARY_OCR_MODEL",
+        "PRIMARY_OCR_MODEL_URL",
+        "PRIMARY_OCR_MODEL_BASE_URL",
+        "PRIMARY_OCR_MODEL_API",
+        "PRIMARY_OCR_MODEL_API_KEY",
+        "PRIMARY_OCR_MODEL_API_KEY_ENV",
+        "IMAGE_MODEL_PROVIDER",
+        "IMAGE_MODEL",
+        "IMAGE_MODEL_URL",
+        "IMAGE_MODEL_BASE_URL",
+        "IMAGE_MODEL_API",
+        "IMAGE_MODEL_API_KEY",
+        "IMAGE_MODEL_API_KEY_ENV",
+        "OCR_PROVIDER",
+        "OCR_MODEL",
+        "OCR_PROVIDER_BASE_URL",
+        "OCR_API_KEY_ENV",
+    ):
+        monkeypatch.setenv(name, "")
+
+    bridge = load_bridge_module()
+
+    assert bridge.OCR_PROVIDER == "custom"
+    assert bridge.OCR_MODEL == "mimo"
+
+
 def test_ocr_provider_error_uses_configured_fallback_provider(monkeypatch):
     bridge = load_bridge_module()
     configure_bridge(bridge)

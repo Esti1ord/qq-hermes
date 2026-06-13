@@ -118,6 +118,63 @@ def test_prompt_context_uses_target_group_when_group_id_is_none(tmp_path):
     assert "本群口头禅" not in context
 
 
+def test_disabled_sample_is_not_recollected_as_active(tmp_path):
+    config = make_config(min_count_for_prompt=1)
+    self_learning.save_learning_data_for_group(
+        123,
+        {
+            "samples": [
+                {"ts": 1000, "text": "不合适的旧梗", "disabled": True},
+            ],
+            "manual_entries": [],
+        },
+        group_config_dir=tmp_path,
+        config=config,
+        now=1001,
+    )
+
+    collected = self_learning.collect_learning_sample(
+        123,
+        "不合适的旧梗",
+        group_config_dir=tmp_path,
+        config=config,
+        now=1002,
+    )
+
+    data = json.loads((tmp_path / "123" / "self_learning.json").read_text(encoding="utf-8"))
+    assert collected is False
+    assert data["samples"] == [{"disabled": True, "text": "不合适的旧梗", "ts": 1000.0}]
+
+
+def test_different_text_can_still_collect_after_disabled_sample(tmp_path):
+    config = make_config(min_count_for_prompt=1)
+    self_learning.save_learning_data_for_group(
+        123,
+        {
+            "samples": [
+                {"ts": 1000, "text": "不合适的旧梗", "disabled": True},
+            ],
+            "manual_entries": [],
+        },
+        group_config_dir=tmp_path,
+        config=config,
+        now=1001,
+    )
+
+    collected = self_learning.collect_learning_sample(
+        123,
+        "新的正常样例",
+        group_config_dir=tmp_path,
+        config=config,
+        now=1002,
+    )
+
+    data = json.loads((tmp_path / "123" / "self_learning.json").read_text(encoding="utf-8"))
+    assert collected is True
+    assert [sample["text"] for sample in data["samples"]] == ["不合适的旧梗", "新的正常样例"]
+    assert data["samples"][0]["disabled"] is True
+
+
 def test_collect_errors_are_swallowed_and_reported(tmp_path):
     blocker = tmp_path / "groups-as-file"
     blocker.write_text("not a directory", encoding="utf-8")

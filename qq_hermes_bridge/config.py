@@ -56,9 +56,13 @@ class Config:
     hermes_bin: str
     hermes_model: str
     hermes_provider: str
+    hermes_provider_base_url: str
+    hermes_api_key_env: str
     hermes_fallback_enabled: bool
     hermes_fallback_model: str
     hermes_fallback_provider: str
+    hermes_fallback_provider_base_url: str
+    hermes_fallback_api_key_env: str
     hermes_model_by_group: dict[int, str]
     hermes_provider_by_group: dict[int, str]
     hermes_group_sessions_enabled: bool
@@ -262,11 +266,15 @@ def load_config(base_dir: Path | None = None) -> Config:
     onebot_access_token = os.getenv("ONEBOT_ACCESS_TOKEN", "").strip()
     bridge_inbound_token = os.getenv("BRIDGE_INBOUND_TOKEN", "").strip()
     hermes_bin = os.getenv("HERMES_BIN", "/home/roxy/.local/bin/hermes")
-    hermes_model = _env_first("PRIMARY_CHAT_MODEL", "HERMES_MODEL")
-    hermes_provider = _env_first("PRIMARY_CHAT_MODEL_PROVIDER", "HERMES_PROVIDER")
+    hermes_model = _env_first("PRIMARY_CHAT_MODEL", "HERMES_MODEL", default=config_utils.DEFAULT_PRIMARY_CHAT_MODEL)
+    hermes_provider = _env_first("PRIMARY_CHAT_MODEL_PROVIDER", "HERMES_PROVIDER", default=config_utils.DEFAULT_PRIMARY_CHAT_PROVIDER)
+    hermes_provider_base_url = _env_first(*config_utils.PRIMARY_CHAT_PROVIDER_URL_ENV_NAMES)
+    hermes_api_key_env = config_utils.api_key_env_name_from_groups(config_utils.PRIMARY_CHAT_API_KEY_ENV_GROUPS)
     hermes_fallback_enabled = config_utils.parse_bool(os.getenv("HERMES_FALLBACK_ENABLED", "true"))
-    hermes_fallback_model = _env_first("VICE_CHAT_MODEL", "HERMES_FALLBACK_MODEL", default="deepseekv4flash")
-    hermes_fallback_provider = _env_first("VICE_CHAT_MODEL_PROVIDER", "HERMES_FALLBACK_PROVIDER", default="官方")
+    hermes_fallback_model = _env_first("VICE_CHAT_MODEL", "HERMES_FALLBACK_MODEL", default=config_utils.DEFAULT_FALLBACK_CHAT_MODEL)
+    hermes_fallback_provider = _env_first("VICE_CHAT_MODEL_PROVIDER", "HERMES_FALLBACK_PROVIDER", default=config_utils.DEFAULT_FALLBACK_CHAT_PROVIDER)
+    hermes_fallback_provider_base_url = _env_first(*config_utils.FALLBACK_CHAT_PROVIDER_URL_ENV_NAMES)
+    hermes_fallback_api_key_env = config_utils.api_key_env_name_from_groups(config_utils.FALLBACK_CHAT_API_KEY_ENV_GROUPS)
     hermes_model_by_group = config_utils.parse_group_str_map(os.getenv("HERMES_MODEL_BY_GROUP", ""))
     hermes_provider_by_group = config_utils.parse_group_str_map(os.getenv("HERMES_PROVIDER_BY_GROUP", ""))
     hermes_group_sessions_enabled = _bool_env("HERMES_GROUP_SESSIONS_ENABLED", "true")
@@ -300,7 +308,7 @@ def load_config(base_dir: Path | None = None) -> Config:
     context_cache_file = Path(os.getenv("CONTEXT_CACHE_FILE", str(resolved_base_dir / "logs" / "recent_context.jsonl")))
     ocr_enabled = config_utils.parse_bool(os.getenv("OCR_ENABLED", "false"))
     ocr_trigger_mode = os.getenv("OCR_TRIGGER_MODE", "direct_only").strip() or "direct_only"
-    ocr_provider = _env_first("PRIMARY_OCR_MODEL_PROVIDER", "OCR_PROVIDER", default="hermes")
+    ocr_provider = _env_first("PRIMARY_OCR_MODEL_PROVIDER", "IMAGE_MODEL_PROVIDER", "OCR_PROVIDER", default=config_utils.DEFAULT_PRIMARY_OCR_PROVIDER)
     ocr_external_provider_allowed = config_utils.parse_bool(os.getenv("OCR_EXTERNAL_PROVIDER_ALLOWED", "false"))
     ocr_max_images_per_message = int(os.getenv("OCR_MAX_IMAGES_PER_MESSAGE", "2"))
     ocr_max_bytes_per_image = int(os.getenv("OCR_MAX_BYTES_PER_IMAGE", "6291456"))
@@ -313,15 +321,15 @@ def load_config(base_dir: Path | None = None) -> Config:
     ocr_persist_text_in_context = config_utils.parse_bool(os.getenv("OCR_PERSIST_TEXT_IN_CONTEXT", "false"))
     ocr_log_text = config_utils.parse_bool(os.getenv("OCR_LOG_TEXT", "false"))
     ocr_log_image_urls = config_utils.parse_bool(os.getenv("OCR_LOG_IMAGE_URLS", "false"))
-    ocr_model = _env_first("PRIMARY_OCR_MODEL", "OCR_MODEL")
-    ocr_provider_base_url = _env_first("PRIMARY_OCR_MODEL_URL", "PRIMARY_OCR_MODEL_BASE_URL", "OCR_PROVIDER_BASE_URL")
+    ocr_model = _env_first("PRIMARY_OCR_MODEL", "IMAGE_MODEL", "OCR_MODEL", default=config_utils.DEFAULT_PRIMARY_OCR_MODEL)
+    ocr_provider_base_url = _env_first("PRIMARY_OCR_MODEL_URL", "PRIMARY_OCR_MODEL_BASE_URL", "IMAGE_MODEL_URL", "IMAGE_MODEL_BASE_URL", "OCR_PROVIDER_BASE_URL")
     ocr_api_key_env = _api_key_env_name(
-        explicit_names=("PRIMARY_OCR_MODEL_API_KEY_ENV", "OCR_API_KEY_ENV"),
-        raw_names=("PRIMARY_OCR_MODEL_API_KEY", "PRIMARY_OCR_MODEL_API", "OCR_API_KEY"),
+        explicit_names=("PRIMARY_OCR_MODEL_API_KEY_ENV", "IMAGE_MODEL_API_KEY_ENV", "OCR_API_KEY_ENV"),
+        raw_names=("PRIMARY_OCR_MODEL_API_KEY", "PRIMARY_OCR_MODEL_API", "IMAGE_MODEL_API_KEY", "IMAGE_MODEL_API", "OCR_API_KEY"),
     )
     ocr_fallback_enabled = config_utils.parse_bool(os.getenv("OCR_FALLBACK_ENABLED", "true"))
-    ocr_fallback_provider = _env_first("VICE_OCR_MODEL_PROVIDER", "OCR_FALLBACK_PROVIDER", default="model")
-    ocr_fallback_model = _env_first("VICE_OCR_MODEL", "OCR_FALLBACK_MODEL", default="gpt-5.4")
+    ocr_fallback_provider = _env_first("VICE_OCR_MODEL_PROVIDER", "OCR_FALLBACK_PROVIDER", default=config_utils.DEFAULT_FALLBACK_OCR_PROVIDER)
+    ocr_fallback_model = _env_first("VICE_OCR_MODEL", "OCR_FALLBACK_MODEL", default=config_utils.DEFAULT_FALLBACK_OCR_MODEL)
     ocr_fallback_provider_base_url = _env_first("VICE_OCR_MODEL_URL", "VICE_OCR_MODEL_BASE_URL", "OCR_FALLBACK_PROVIDER_BASE_URL")
     ocr_fallback_api_key_env = _api_key_env_name(
         explicit_names=("VICE_OCR_MODEL_API_KEY_ENV", "OCR_FALLBACK_API_KEY_ENV"),
@@ -428,9 +436,13 @@ def load_config(base_dir: Path | None = None) -> Config:
         hermes_bin=hermes_bin,
         hermes_model=hermes_model,
         hermes_provider=hermes_provider,
+        hermes_provider_base_url=hermes_provider_base_url,
+        hermes_api_key_env=hermes_api_key_env,
         hermes_fallback_enabled=hermes_fallback_enabled,
         hermes_fallback_model=hermes_fallback_model,
         hermes_fallback_provider=hermes_fallback_provider,
+        hermes_fallback_provider_base_url=hermes_fallback_provider_base_url,
+        hermes_fallback_api_key_env=hermes_fallback_api_key_env,
         hermes_model_by_group=hermes_model_by_group,
         hermes_provider_by_group=hermes_provider_by_group,
         hermes_group_sessions_enabled=hermes_group_sessions_enabled,

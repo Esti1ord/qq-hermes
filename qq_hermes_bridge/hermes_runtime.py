@@ -1,10 +1,15 @@
 """Hermes CLI/session helpers for the QQ bridge."""
 from __future__ import annotations
 
+import os
 import re
 import sqlite3
 from pathlib import Path
-from typing import Callable
+from typing import Any, Callable
+
+import httpx
+
+from . import openai_compat
 
 
 def subprocess_safe_text(text: str | None) -> str:
@@ -20,6 +25,104 @@ def hermes_session_name_for_group(
 ) -> str:
     gid = group_id if group_id is not None else target_group_id
     return f"{group_session_prefix}-{gid}"
+
+
+OPENAI_COMPATIBLE_TEXT_PROVIDER_ALIASES = {
+    "model",
+    "openai",
+    "openai_compatible",
+    "openai-gpt",
+    "custom",
+    "axonhub",
+    "siliconflow",
+    "silicon-flow",
+}
+
+HERMES_PROVIDER_ALIASES = {
+    "官方": "deepseek",
+}
+
+
+def normalize_provider_for_hermes(provider: str | None) -> str:
+    clean = str(provider or "").strip()
+    return HERMES_PROVIDER_ALIASES.get(clean, clean)
+
+
+def provider_supports_direct_http(provider: str | None) -> bool:
+    return str(provider or "").strip().lower() in OPENAI_COMPATIBLE_TEXT_PROVIDER_ALIASES
+
+
+def normalize_chat_completions_url(base_url: str) -> str:
+    return openai_compat.normalize_chat_completions_url(base_url)
+
+
+def max_tokens_for_text_response(max_reply_chars: int = 0) -> int:
+    try:
+        chars = int(max_reply_chars)
+    except (TypeError, ValueError):
+        chars = 0
+    if chars <= 0:
+        return 1024
+    return max(64, min(4096, int(chars * 0.75) + 128))
+
+
+def build_openai_compatible_chat_request(*, model: str, prompt: str, max_reply_chars: int = 0) -> dict[str, Any]:
+    return {
+        "model": str(model or "").strip(),
+        "messages": [{"role": "user", "content": subprocess_safe_text(prompt)}],
+        "max_tokens": max_tokens_for_text_response(max_reply_chars),
+    }
+
+
+def extract_openai_compatible_text(payload: Any) -> str:
+    return openai_compat.extract_chat_text(payload)
+
+
+def run_openai_compatible_chat_completion(
+    prompt: str,
+    *,
+    base_url: str,
+    model: str,
+    api_key_env: str,
+    timeout: float,
+    max_reply_chars: int = 0,
+    transport: httpx.BaseTransport | None = None,
+) -> dict[str, Any]:
+    url = normalize_chat_completions_url(base_url)
+    if not url:
+        return {"ok": False, "text": "", "reason": "missing_base_url"}
+    if not str(model or "").strip():
+        return {"ok": False, "text": "", "reason": "missing_model"}
+    clean_api_key_env = str(api_key_env or "").strip()
+    if not clean_api_key_env:
+        return {"ok": False, "text": "", "reason": "missing_api_key_env"}
+    api_key = os.getenv(clean_api_key_env, "").strip()
+    if not api_key:
+        return {"ok": False, "text": "", "reason": "missing_api_key"}
+
+    body = build_openai_compatible_chat_request(model=model, prompt=prompt, max_reply_chars=max_reply_chars)
+    headers = {
+        "Authorization": f"Bearer {api_key}",
+        "Content-Type": "application/json",
+    }
+    try:
+        with httpx.Client(timeout=timeout, trust_env=False, transport=transport) as client:
+            response = client.post(url, headers=headers, json=body)
+    except httpx.TimeoutException:
+        return {"ok": False, "text": "", "reason": "timeout"}
+    except httpx.HTTPError:
+        return {"ok": False, "text": "", "reason": "http_error"}
+    except Exception as exc:
+        return {"ok": False, "text": "", "reason": type(exc).__name__}
+
+    if response.status_code < 200 or response.status_code >= 300:
+        return {"ok": False, "text": "", "reason": "http_status", "status_code": response.status_code}
+    try:
+        payload = response.json()
+    except ValueError:
+        return {"ok": False, "text": "", "reason": "invalid_json"}
+    text = extract_openai_compatible_text(payload)
+    return {"ok": bool(text), "text": text, "reason": "" if text else "malformed_response"}
 
 
 def build_hermes_cmd(
@@ -47,7 +150,7 @@ def build_hermes_cmd(
         )
         cmd.extend(["--continue", session_name, "--source", f"qq-bridge:{gid}"])
     selected_model = hermes_model if model is None else model
-    selected_provider = hermes_provider if provider is None else provider
+    selected_provider = normalize_provider_for_hermes(hermes_provider if provider is None else provider)
     if selected_model:
         cmd.extend(["--model", selected_model])
     if selected_provider:

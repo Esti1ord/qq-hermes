@@ -1,4 +1,7 @@
+import json
 from pathlib import Path
+
+import httpx
 
 from qq_hermes_bridge import hermes_runtime
 
@@ -135,3 +138,67 @@ def test_strip_session_footer_keeps_natural_warning_wording():
     output = "Warning: 这句是模型自然输出\n\nsession_id: 20260608_132716_3e3e54"
 
     assert hermes_runtime.strip_session_footer(output) == "Warning: 这句是模型自然输出"
+
+
+def test_build_hermes_cmd_maps_official_chinese_provider_alias_to_deepseek():
+    cmd = hermes_runtime.build_hermes_cmd(
+        "prompt",
+        hermes_bin="hermes",
+        group_sessions_enabled=False,
+        group_session_prefix="qq-group",
+        target_group_id=975805598,
+        hermes_model="deepseek-v4-flash",
+        hermes_provider="官方",
+    )
+
+    assert cmd[cmd.index("--provider") + 1] == "deepseek"
+
+
+def test_run_openai_compatible_chat_completion_posts_safe_request(monkeypatch):
+    monkeypatch.setenv("TEXT_API_KEY", "test-secret-key")
+    requests = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        return httpx.Response(200, json={"choices": [{"message": {"content": "模型回复"}}]})
+
+    result = hermes_runtime.run_openai_compatible_chat_completion(
+        "用户问题",
+        base_url="https://chat.example.test/v1",
+        model="deepseek-v4-flash",
+        api_key_env="TEXT_API_KEY",
+        timeout=5,
+        max_reply_chars=300,
+        transport=httpx.MockTransport(handler),
+    )
+
+    assert result == {"ok": True, "text": "模型回复", "reason": ""}
+    request = requests[0]
+    assert str(request.url) == "https://chat.example.test/v1/chat/completions"
+    assert request.headers["authorization"] == "Bearer test-secret-key"
+    body = json.loads(request.content.decode("utf-8"))
+    assert body["model"] == "deepseek-v4-flash"
+    assert body["messages"] == [{"role": "user", "content": "用户问题"}]
+    assert body["max_tokens"] >= 64
+
+
+def test_run_openai_compatible_chat_completion_errors_do_not_expose_secrets(monkeypatch):
+    monkeypatch.setenv("TEXT_API_KEY", "secret-api-key")
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(401, content=b"secret response body secret-api-key")
+
+    result = hermes_runtime.run_openai_compatible_chat_completion(
+        "secret prompt",
+        base_url="https://chat.example.test/v1",
+        model="deepseek-v4-flash",
+        api_key_env="TEXT_API_KEY",
+        timeout=5,
+        transport=httpx.MockTransport(handler),
+    )
+
+    assert result["ok"] is False
+    assert result["reason"] == "http_status"
+    assert "secret-api-key" not in repr(result)
+    assert "secret response body" not in repr(result)
+    assert "secret prompt" not in repr(result)
