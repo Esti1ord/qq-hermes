@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import random
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Callable
@@ -105,6 +106,12 @@ DEFAULT_RESULTS: dict[str, Any] = {
         },
     ]
 }
+JRRP_SCORE_COMPONENTS: tuple[tuple[float, float, float], ...] = (
+    (0.70, 75.0, 8.0),
+    (0.20, 65.0, 18.0),
+    (0.10, 45.0, 22.0),
+)
+JRRP_SCORE_RETRY_LIMIT = 64
 DEFAULT_LEVEL = DEFAULT_RESULTS["levels"][4]
 
 
@@ -138,6 +145,27 @@ def pick_option(options: Any, seed: str, salt: str) -> str:
         return ""
     idx = int(hashlib.sha256(f"{seed}:{salt}".encode("utf-8")).hexdigest()[:8], 16) % len(options)
     return str(options[idx])
+
+
+def _score_component(rng: random.Random) -> tuple[float, float]:
+    marker = rng.random()
+    cumulative = 0.0
+    for weight, mean, stdev in JRRP_SCORE_COMPONENTS:
+        cumulative += weight
+        if marker <= cumulative:
+            return mean, stdev
+    _, mean, stdev = JRRP_SCORE_COMPONENTS[-1]
+    return mean, stdev
+
+
+def score_for_seed(seed: str) -> int:
+    rng = random.Random(f"{seed}:score")
+    for _ in range(JRRP_SCORE_RETRY_LIMIT):
+        mean, stdev = _score_component(rng)
+        sample = rng.gauss(mean, stdev)
+        if 0 <= sample <= 100:
+            return max(0, min(100, round(sample)))
+    return 75
 
 
 def _matching_level(levels: Any, score: int) -> dict[str, Any] | None:
@@ -178,8 +206,7 @@ def build_jrrp_reply(
     if state_key in state:
         return "你今日已经抽过了", False
     seed = now.strftime("%Y%m%d%H%M%S") + qq
-    digest = hashlib.sha256(seed.encode("utf-8")).hexdigest()
-    score = int(digest[:8], 16) % 101
+    score = score_for_seed(seed)
     results = load_results_fn()
     level = level_for_score(results, score)
     level_name = str(level.get("name") or "平")

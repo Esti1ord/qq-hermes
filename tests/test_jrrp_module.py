@@ -1,6 +1,11 @@
+import math
+
 import pytest
 
 from qq_hermes_bridge import jrrp
+
+
+FIXED_SEED = "2026060221052544866989"
 
 
 @pytest.mark.parametrize(
@@ -61,3 +66,40 @@ def test_level_for_score_custom_levels_fall_back_when_no_custom_match():
 
     assert jrrp.level_for_score(results, 100)["name"] == "天选之人"
     assert jrrp.level_for_score(results, 0)["name"] == "大凶"
+
+
+def test_score_for_seed_is_deterministic_integer_in_range():
+    score = jrrp.score_for_seed(FIXED_SEED)
+
+    assert isinstance(score, int)
+    assert 0 <= score <= 100
+    assert score == jrrp.score_for_seed(FIXED_SEED)
+
+
+def test_score_for_seed_uses_asymmetric_gaussian_mixture_shape():
+    def density(score):
+        total = 0.0
+        for weight, mean, stdev in jrrp.JRRP_SCORE_COMPONENTS:
+            total += weight * math.exp(-((score - mean) ** 2) / (2 * stdev**2)) / stdev
+        return total
+
+    scores = list(range(101))
+    mode = max(scores, key=density)
+
+    assert mode == 75
+    assert all(density(score) <= density(score + 1) for score in range(75))
+    assert all(density(score) >= density(score + 1) for score in range(75, 100))
+    assert density(50) > density(100)
+    assert density(0) < density(50) < density(75)
+    assert density(75) > density(90) > density(100)
+
+
+def test_score_for_seed_distribution_keeps_100_rare_without_clamping_pileup():
+    scores = [jrrp.score_for_seed(f"shape:{idx}") for idx in range(20_000)]
+    counts = {score: scores.count(score) for score in range(101)}
+    mode = max(counts, key=counts.get)
+
+    assert 70 <= mode <= 80
+    assert counts[100] < counts[95] < counts[90] < counts[80]
+    assert counts[100] < len(scores) * 0.002
+    assert sum(counts[score] for score in range(0, 40)) > sum(counts[score] for score in range(90, 101))
