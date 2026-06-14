@@ -26,6 +26,11 @@ URLs, tokens, cookies, user identifiers, and full provider responses.
   filter unsafe fields.
 - Content analysis logs are separate and sensitive; do not mix them with runtime
   stats or Prometheus metrics.
+- `direct_reply_result` may include direct fast/strong-lane booleans and
+  low-cardinality labels such as `direct_model_profile=standard|strong` and
+  `direct_model_override=true|false`. These fields must not include raw model
+  aliases, provider URLs, API-key env names, prompt/chat/OCR text, image URLs, or
+  model output.
 
 ---
 

@@ -2430,6 +2430,43 @@ def direct_model_for_group(group_id: int | None, *, strong: bool = False) -> str
     return hermes_model_for_group(group_id)
 
 
+def direct_intent_is_reply_to_bot(intent: dict[str, Any]) -> bool:
+    event = intent.get("event") if isinstance(intent.get("event"), dict) else {}
+    if not event:
+        return False
+    try:
+        return bool(is_reply_to_me(event))
+    except Exception:
+        return False
+
+
+def direct_intent_has_media(intent: dict[str, Any]) -> bool:
+    event = intent.get("event") if isinstance(intent.get("event"), dict) else {}
+    if not event:
+        return False
+    try:
+        return bool(media_refs_for_event(event, max_refs=1, include_reply_media=True))
+    except Exception:
+        return bool(media.has_processable_media(event.get("message")))
+
+
+def direct_media_context_available(media_context: Any) -> bool:
+    text = str(media_context or "").strip()
+    return bool(text and text != "（当前消息没有图片识别结果）")
+
+
+def direct_profile_for_intent(intent: dict[str, Any], *, media_context: Any = None) -> str:
+    trigger = str(intent.get("trigger") or "").strip().lower()
+    if trigger == "reply_to_bot" or direct_intent_is_reply_to_bot(intent):
+        return "strong"
+    if direct_intent_has_media(intent):
+        return "strong"
+    effective_media_context = intent.get("media_context") if media_context is None else media_context
+    if direct_media_context_available(effective_media_context):
+        return "strong"
+    return "standard"
+
+
 def direct_provider_for_group(group_id: int | None) -> str:
     return DIRECT_CHAT_MODEL_PROVIDER or hermes_provider_for_group(group_id)
 
@@ -3041,14 +3078,22 @@ def run_hermes(prompt: str, group_id: int | None = None, use_group_session: bool
     return finalize_reply(raw)
 
 
-def run_direct_hermes_raw(prompt: str, group_id: int | None = None, *, use_group_session: bool = True, purpose: str = "direct_reply") -> str:
-    if direct_fast_lane_configured():
+def run_direct_hermes_raw(
+    prompt: str,
+    group_id: int | None = None,
+    *,
+    use_group_session: bool = True,
+    purpose: str = "direct_reply",
+    strong: bool = False,
+) -> str:
+    if direct_fast_lane_configured() or (strong and DIRECT_STRONG_MODEL_ALIAS):
         return str(
             run_direct_hermes_raw_result(
                 prompt,
                 group_id,
                 use_group_session=use_group_session,
                 purpose=purpose,
+                strong=strong,
             ).get("text")
             or ""
         )
@@ -3068,11 +3113,11 @@ def direct_retry_prompt(prompt: str) -> str:
     )
 
 
-def generate_direct_reply(prompt: str, group_id: int | None = None) -> dict[str, Any]:
-    raw = run_direct_hermes_raw(prompt, group_id, purpose="direct_reply")
+def generate_direct_reply(prompt: str, group_id: int | None = None, *, strong: bool = False) -> dict[str, Any]:
+    raw = run_direct_hermes_raw(prompt, group_id, purpose="direct_reply", strong=strong)
     if not raw:
         log({"type": "direct_reply_empty_retry", "group_id": group_id, "retry_use_group_session": False})
-        raw = run_direct_hermes_raw(direct_retry_prompt(prompt), group_id, use_group_session=False, purpose="direct_reply_retry")
+        raw = run_direct_hermes_raw(direct_retry_prompt(prompt), group_id, use_group_session=False, purpose="direct_reply_retry", strong=strong)
     if not raw:
         reply = pick_template("hermes_error", str(group_id or ""))
         log({"type": "direct_reply_generation_failed", "group_id": group_id, "reason": "direct_hermes_empty"})
@@ -3299,6 +3344,8 @@ def record_direct_reply_runtime_result(group_id: int, event: dict[str, Any], *, 
         suppressed_duplicate=result.get("ignored") == "duplicate_outbound",
         output_len=output_len,
         queue_remaining=result.get("queue_remaining", reply_queue_size(group_id)),
+        direct_model_profile=runtime_stats.normalize_label(perf.get("direct_model_profile") or "standard", default="standard", max_len=16),
+        direct_model_override=bool(perf.get("direct_model_override")),
         coalesced_count=perf.get("coalesced_count", 1),
         coalesce_window_ms=perf.get("coalesce_window_ms", 0),
         queue_wait_ms=perf.get("queue_wait_ms", 0),
@@ -3389,8 +3436,12 @@ async def process_direct_reply_intent(group_id: int, queued_intent: dict[str, An
             prompt_media_context = "（当前消息没有图片识别结果）"
         prompt = build_prompt(event, prompt_user_text, prompt_media_context)
         prompt_build_ms = runtime_elapsed_ms(prompt_start)
+        direct_model_profile = direct_profile_for_intent(queued_intent, media_context=media_context)
+        direct_model_strong = direct_model_profile == "strong" and bool(DIRECT_STRONG_MODEL_ALIAS)
+        perf["direct_model_profile"] = direct_model_profile
+        perf["direct_model_override"] = direct_model_strong
         generation_start = runtime_now()
-        generated = await asyncio.to_thread(generate_direct_reply, prompt, group_id)
+        generated = await asyncio.to_thread(generate_direct_reply, prompt, group_id, strong=direct_model_strong)
         generation_ms = runtime_elapsed_ms(generation_start)
     except Exception as exc:
         log({"type": "direct_reply_error", "group_id": group_id, "user_id": event.get("user_id"), "error": type(exc).__name__})
@@ -4189,6 +4240,10 @@ def build_admin_state(group_id: int | None = None) -> dict[str, Any]:
         hermes_provider_for_group(selected_group_id),
     )
     fallback_model = admin_view.safe_model_provider_details(HERMES_FALLBACK_MODEL, HERMES_FALLBACK_PROVIDER)
+    direct_strong_model = admin_view.safe_model_provider_details(
+        DIRECT_STRONG_MODEL_ALIAS,
+        direct_provider_for_group(selected_group_id),
+    )
     ocr_primary = admin_view.safe_model_provider_details(OCR_MODEL or HERMES_MODEL, OCR_PROVIDER)
     ocr_fallback = admin_view.safe_model_provider_details(OCR_FALLBACK_MODEL, OCR_FALLBACK_PROVIDER)
     queue_total = sum(int((group.get("queues") or {}).get("total") or 0) for group in group_states)
@@ -4237,6 +4292,12 @@ def build_admin_state(group_id: int | None = None) -> dict[str, Any]:
                 **fallback_model,
                 "enabled": HERMES_FALLBACK_ENABLED,
                 "available_for_selected_group": hermes_fallback_available(selected_group_id),
+            },
+            "direct_strong": {
+                **direct_strong_model,
+                "enabled": bool(DIRECT_STRONG_MODEL_ALIAS),
+                "model_only_override": True,
+                "triggered_by": ["reply_to_bot", "media_context"],
             },
             "group_model_override_count": len(HERMES_MODEL_BY_GROUP),
             "group_provider_override_count": len(HERMES_PROVIDER_BY_GROUP),

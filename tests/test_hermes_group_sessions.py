@@ -659,6 +659,125 @@ def test_direct_fast_lane_skips_duplicate_fallback_after_provider_normalization(
     assert len(calls) == 1
 
 
+def test_direct_strong_lane_skips_duplicate_fallback_after_provider_normalization(monkeypatch):
+    bridge = load_bridge_module()
+    bridge.HERMES_BIN = "hermes"
+    bridge.HERMES_MODEL = "primary-model"
+    bridge.HERMES_PROVIDER = "官方"
+    bridge.HERMES_MODEL_BY_GROUP = {}
+    bridge.HERMES_PROVIDER_BY_GROUP = {}
+    bridge.HERMES_PROVIDER_BASE_URL = ""
+    bridge.HERMES_API_KEY_ENV = ""
+    bridge.HERMES_FALLBACK_ENABLED = True
+    bridge.HERMES_FALLBACK_MODEL = "strong-direct-model"
+    bridge.HERMES_FALLBACK_PROVIDER = "deepseek"
+    bridge.HERMES_FALLBACK_PROVIDER_BASE_URL = ""
+    bridge.HERMES_FALLBACK_API_KEY_ENV = ""
+    bridge.HERMES_GROUP_SESSIONS_ENABLED = False
+    bridge.DIRECT_FAST_MODEL_ALIAS = ""
+    bridge.DIRECT_STRONG_MODEL_ALIAS = "strong-direct-model"
+    bridge.DIRECT_CHAT_MODEL_PROVIDER = ""
+    bridge.DIRECT_CHAT_MODEL_BASE_URL = ""
+    bridge.DIRECT_CHAT_MODEL_API_KEY_ENV = ""
+    bridge.DIRECT_MODEL_TIMEOUT_SECONDS = 0
+    bridge.DIRECT_MAX_OUTPUT_CHARS = 0
+    calls = []
+
+    class FakeFailed:
+        returncode = 1
+        stdout = ""
+        stderr = "down"
+
+    def fake_run(cmd, **kwargs):
+        calls.append(cmd)
+        return FakeFailed()
+
+    monkeypatch.setattr(bridge.subprocess, "run", fake_run)
+
+    result = bridge.run_direct_hermes_raw_result("prompt", group_id=781423661, strong=True)
+
+    assert result["ok"] is False
+    assert result["reason"] == "hermes_nonzero"
+    assert len(calls) == 1
+    assert calls[0][calls[0].index("--model") + 1] == "strong-direct-model"
+
+
+def test_direct_strong_lane_overrides_model_only_and_preserves_provider(monkeypatch):
+    bridge = load_bridge_module()
+    bridge.HERMES_BIN = "hermes"
+    bridge.HERMES_MODEL = "primary-model"
+    bridge.HERMES_PROVIDER = "deepseek"
+    bridge.HERMES_PROVIDER_BASE_URL = ""
+    bridge.HERMES_API_KEY_ENV = ""
+    bridge.HERMES_MODEL_BY_GROUP = {}
+    bridge.HERMES_PROVIDER_BY_GROUP = {}
+    bridge.HERMES_FALLBACK_ENABLED = False
+    bridge.HERMES_GROUP_SESSIONS_ENABLED = False
+    bridge.DIRECT_FAST_MODEL_ALIAS = ""
+    bridge.DIRECT_STRONG_MODEL_ALIAS = "strong-direct-model"
+    bridge.DIRECT_CHAT_MODEL_PROVIDER = ""
+    bridge.DIRECT_CHAT_MODEL_BASE_URL = ""
+    bridge.DIRECT_CHAT_MODEL_API_KEY_ENV = ""
+    bridge.DIRECT_MODEL_TIMEOUT_SECONDS = 0
+    bridge.DIRECT_MAX_OUTPUT_CHARS = 0
+    calls = []
+
+    class FakeCompleted:
+        returncode = 0
+        stdout = "strong direct answer"
+        stderr = ""
+
+    def fake_run(cmd, **kwargs):
+        calls.append(cmd)
+        return FakeCompleted()
+
+    monkeypatch.setattr(bridge.subprocess, "run", fake_run)
+
+    assert bridge.run_direct_hermes_raw("SECRET_PROMPT", group_id=781423661, strong=True) == "strong direct answer"
+
+    assert len(calls) == 1
+    cmd = calls[0]
+    assert cmd[cmd.index("--model") + 1] == "strong-direct-model"
+    assert cmd[cmd.index("--provider") + 1] == "deepseek"
+
+
+def test_direct_strong_http_lane_preserves_direct_transport_and_logs_safely(monkeypatch):
+    bridge = load_bridge_module()
+    bridge.HERMES_MODEL_BY_GROUP = {}
+    bridge.HERMES_PROVIDER_BY_GROUP = {}
+    bridge.HERMES_FALLBACK_ENABLED = False
+    bridge.DIRECT_FAST_MODEL_ALIAS = ""
+    bridge.DIRECT_STRONG_MODEL_ALIAS = "strong-direct-model"
+    bridge.DIRECT_CHAT_MODEL_PROVIDER = "custom"
+    bridge.DIRECT_CHAT_MODEL_BASE_URL = "https://direct-chat.example.test/v1"
+    bridge.DIRECT_CHAT_MODEL_API_KEY_ENV = "DIRECT_TEXT_API_KEY"
+    bridge.DIRECT_MODEL_TIMEOUT_SECONDS = 0
+    bridge.DIRECT_MAX_OUTPUT_CHARS = 0
+    logs = []
+    calls = []
+
+    def fake_http(prompt, **kwargs):
+        calls.append({"prompt": prompt, **kwargs})
+        return {"ok": True, "text": "strong http answer", "reason": ""}
+
+    monkeypatch.setattr(bridge, "log", lambda event: logs.append(event))
+    monkeypatch.setattr(bridge.hermes_runtime, "run_openai_compatible_chat_completion", fake_http)
+    monkeypatch.setattr(bridge.subprocess, "run", lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("CLI should not run")))
+
+    assert bridge.run_direct_hermes_raw("SECRET_PROMPT", group_id=781423661, strong=True) == "strong http answer"
+
+    assert len(calls) == 1
+    assert calls[0]["prompt"] == "SECRET_PROMPT"
+    assert calls[0]["model"] == "strong-direct-model"
+    assert calls[0]["base_url"] == "https://direct-chat.example.test/v1"
+    assert calls[0]["api_key_env"] == "DIRECT_TEXT_API_KEY"
+    rendered_logs = repr(logs)
+    assert "SECRET_PROMPT" not in rendered_logs
+    assert "strong-direct-model" not in rendered_logs
+    assert "https://direct-chat.example.test" not in rendered_logs
+    assert "DIRECT_TEXT_API_KEY" not in rendered_logs
+
+
 def test_text_http_client_is_reused_for_direct_http_calls(monkeypatch):
     bridge = load_bridge_module()
     bridge.HERMES_TIMEOUT = 5

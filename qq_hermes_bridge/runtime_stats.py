@@ -47,6 +47,7 @@ SAFE_FIELD_NAMES = {
     "e2e_bucket",
     "prompt_build_ms",
     "prompt_profile",
+    "direct_model_profile",
     "prompt_section_count",
     "prompt_truncated_count",
     "total_budget_chars",

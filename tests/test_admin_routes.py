@@ -107,6 +107,7 @@ def test_admin_state_json_shape_includes_runtime_model_and_context_overview():
     bridge.TARGET_GROUP_ID = group_id
     bridge.HERMES_MODEL = "gpt-5.4"
     bridge.HERMES_PROVIDER = "官方"
+    bridge.DIRECT_STRONG_MODEL_ALIAS = "safe-strong-direct-model"
     bridge.HERMES_MODEL_BY_GROUP = {group_id: "deepseekv4flash"}
     bridge.HERMES_PROVIDER_BY_GROUP = {}
     bridge._recent_messages_by_group[group_id] = deque([
@@ -152,6 +153,11 @@ def test_admin_state_json_shape_includes_runtime_model_and_context_overview():
     assert state["runtime"]["target_group_id"] == group_id
     assert state["model_routing"]["primary"]["model"] == "gpt-5.4"
     assert state["model_routing"]["primary"]["provider"] == "官方"
+    assert state["model_routing"]["direct_strong"]["model"] == "safe-strong-direct-model"
+    assert state["model_routing"]["direct_strong"]["provider"] == "官方"
+    assert state["model_routing"]["direct_strong"]["enabled"] is True
+    assert state["model_routing"]["direct_strong"]["model_only_override"] is True
+    assert state["model_routing"]["direct_strong"]["triggered_by"] == ["reply_to_bot", "media_context"]
     assert state["model_routing"]["selected_group"]["model"] == "deepseekv4flash"
     assert state["safety"]["raw_chat_hidden"] is True
     assert state["safety"]["prompt_text_hidden"] is True
@@ -232,6 +238,7 @@ def test_admin_state_excludes_sensitive_values_and_raw_content():
     bridge.HERMES_FALLBACK_PROVIDER = "gateway.example"
     bridge.HERMES_PROVIDER_BY_GROUP = {group_id: "127.0.0.1:11434"}
     bridge.HERMES_MODEL_BY_GROUP = {}
+    bridge.DIRECT_STRONG_MODEL_ALIAS = "DIRECT_SECRET_API_KEY"
     bridge.OCR_PROVIDER = provider_url
     bridge.OCR_MODEL = "ocr-model"
     bridge.OCR_FALLBACK_PROVIDER = "ocr-gateway.example"
@@ -259,6 +266,8 @@ def test_admin_state_excludes_sensitive_values_and_raw_content():
 
     assert state["model_routing"]["primary"]["model"] == bridge.admin_view.REDACTED
     assert state["model_routing"]["primary"]["provider"] == bridge.admin_view.REDACTED
+    assert state["model_routing"]["direct_strong"]["model"] == bridge.admin_view.REDACTED
+    assert state["model_routing"]["direct_strong"]["provider"] == bridge.admin_view.REDACTED
     assert state["ocr"]["provider"] == bridge.admin_view.REDACTED
     assert state["safety"]["provider_urls_hidden"] is True
     assert state["safety"]["api_env_hidden"] is True
@@ -276,6 +285,7 @@ def test_admin_state_excludes_sensitive_values_and_raw_content():
         onebot_token,
         "secret-bridge-token",
         "PRIMARY_OCR_MODEL_API_KEY",
+        "DIRECT_SECRET_API_KEY",
         "gateway.example",
         "ocr-gateway.example",
         "127.0.0.1:11434",

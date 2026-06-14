@@ -34,6 +34,13 @@ def configure_bridge(bridge):
     bridge.USER_COOLDOWN_SECONDS = 0.0
     bridge.MAX_PENDING_DIRECT_REPLIES = 20
     bridge.DIRECT_COALESCE_WINDOW_MS = 0
+    bridge.DIRECT_FAST_MODEL_ALIAS = ""
+    bridge.DIRECT_STRONG_MODEL_ALIAS = ""
+    bridge.DIRECT_CHAT_MODEL_PROVIDER = ""
+    bridge.DIRECT_CHAT_MODEL_BASE_URL = ""
+    bridge.DIRECT_CHAT_MODEL_API_KEY_ENV = ""
+    bridge.DIRECT_MODEL_TIMEOUT_SECONDS = 0
+    bridge.DIRECT_MAX_OUTPUT_CHARS = 0
     bridge.PROACTIVE_TRIGGER_THRESHOLD = 70.0
     bridge.PROACTIVE_TRIGGER_THRESHOLDS_BY_GROUP = {}
     bridge.PROACTIVE_GROUP_COOLDOWN_SECONDS = 900.0
@@ -601,6 +608,68 @@ def test_send_group_msg_exception_log_does_not_include_url_token_or_message(monk
     assert "private message" not in rendered
 
 
+
+
+def test_direct_strong_model_profile_applies_to_reply_to_bot_and_media_only(monkeypatch):
+    bridge = load_bridge_module()
+    configure_bridge(bridge)
+    bridge.RUNTIME_STATS_ENABLED = True
+    bridge.PERF_OBS_ENABLED = True
+    bridge.DIRECT_STRONG_MODEL_ALIAS = "secret-strong-direct-model"
+    calls = []
+    stats = []
+    sent = []
+
+    def fake_run_direct(prompt, group_id=None, use_group_session=True, purpose="unknown", strong=False):
+        calls.append({"group_id": group_id, "purpose": purpose, "use_group_session": use_group_session, "strong": strong})
+        return f"回答{len(calls)}"
+
+    async def fake_send(group_id, message):
+        sent.append((group_id, message))
+        return {"ok": True}
+
+    monkeypatch.setattr(bridge, "runtime_stat", lambda stat, **fields: stats.append({"stat": stat, **fields}))
+    monkeypatch.setattr(bridge, "run_direct_hermes_raw", fake_run_direct)
+    monkeypatch.setattr(bridge, "send_group_msg", fake_send)
+
+    standard_event = make_at_event(text="Esti 普通直接问题", user_id=1, message_id=610)
+    reply_event = make_at_event(text="回复机器人", user_id=2, message_id=611)
+    reply_event["message"] = [
+        {"type": "reply", "data": {"qq": str(reply_event["self_id"]), "id": "previous-bot-message"}},
+        {"type": "at", "data": {"qq": str(reply_event["self_id"])}},
+        {"type": "text", "data": {"text": "回复机器人"}},
+    ]
+    media_event = make_at_event(text="Esti 看图", user_id=3, message_id=612)
+    media_event["message"].append({"type": "image", "data": {"file": "opaque-file-id", "url": "https://image-secret.example/pic.png"}})
+
+    async def run_three():
+        await bridge.process_direct_reply_intent(975805598, {"kind": "direct", "event": standard_event, "user_text": "Esti 普通直接问题", "trigger": "at"})
+        await bridge.process_direct_reply_intent(975805598, {"kind": "direct", "event": reply_event, "user_text": "回复机器人", "trigger": "at"})
+        await bridge.process_direct_reply_intent(
+            975805598,
+            {
+                "kind": "direct",
+                "event": media_event,
+                "user_text": "Esti 看图",
+                "trigger": "at",
+                "media_context": "（当前消息没有图片识别结果）",
+            },
+        )
+
+    asyncio.run(run_three())
+
+    assert [call["strong"] for call in calls] == [False, True, True]
+    assert sent == [
+        (975805598, "[CQ:reply,id=610]回答1"),
+        (975805598, "[CQ:reply,id=611]回答2"),
+        (975805598, "[CQ:reply,id=612]回答3"),
+    ]
+    direct_results = [item for item in stats if item["stat"] == "direct_reply_result"]
+    assert [item["direct_model_profile"] for item in direct_results] == ["standard", "strong", "strong"]
+    assert [item["direct_model_override"] for item in direct_results] == [False, True, True]
+    rendered_stats = repr(direct_results)
+    assert "secret-strong-direct-model" not in rendered_stats
+    assert "image-secret.example" not in rendered_stats
 
 
 def test_direct_reply_emits_content_safe_performance_stats(monkeypatch):
