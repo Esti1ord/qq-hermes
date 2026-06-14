@@ -63,6 +63,13 @@ class Config:
     hermes_fallback_provider: str
     hermes_fallback_provider_base_url: str
     hermes_fallback_api_key_env: str
+    direct_fast_model_alias: str
+    direct_strong_model_alias: str
+    direct_chat_model_provider: str
+    direct_chat_model_base_url: str
+    direct_chat_model_api_key_env: str
+    direct_model_timeout_seconds: int
+    direct_max_output_chars: int
     hermes_model_by_group: dict[int, str]
     hermes_provider_by_group: dict[int, str]
     hermes_group_sessions_enabled: bool
@@ -280,6 +287,14 @@ def load_config(base_dir: Path | None = None) -> Config:
     hermes_fallback_provider = _env_first("VICE_CHAT_MODEL_PROVIDER", "HERMES_FALLBACK_PROVIDER", default=config_utils.DEFAULT_FALLBACK_CHAT_PROVIDER)
     hermes_fallback_provider_base_url = _env_first(*config_utils.FALLBACK_CHAT_PROVIDER_URL_ENV_NAMES)
     hermes_fallback_api_key_env = config_utils.api_key_env_name_from_groups(config_utils.FALLBACK_CHAT_API_KEY_ENV_GROUPS)
+    direct_fast_model_alias = _env_first("DIRECT_FAST_MODEL_ALIAS", default="")
+    direct_strong_model_alias = _env_first("DIRECT_STRONG_MODEL_ALIAS", default="")
+    direct_chat_model_provider = _env_first("DIRECT_CHAT_MODEL_PROVIDER", default="")
+    direct_chat_model_base_url = _env_first("DIRECT_CHAT_MODEL_URL", "DIRECT_CHAT_MODEL_BASE_URL")
+    direct_chat_model_api_key_env = _api_key_env_name(
+        explicit_names=("DIRECT_CHAT_MODEL_API_KEY_ENV",),
+        raw_names=("DIRECT_CHAT_MODEL_API_KEY", "DIRECT_CHAT_MODEL_API"),
+    )
     hermes_model_by_group = config_utils.parse_group_str_map(os.getenv("HERMES_MODEL_BY_GROUP", ""))
     hermes_provider_by_group = config_utils.parse_group_str_map(os.getenv("HERMES_PROVIDER_BY_GROUP", ""))
     hermes_group_sessions_enabled = _bool_env("HERMES_GROUP_SESSIONS_ENABLED", "true")
@@ -295,6 +310,7 @@ def load_config(base_dir: Path | None = None) -> Config:
         direct_prompt_profile = "rich"
     direct_prompt_total_budget_chars = max(0, int(os.getenv("DIRECT_PROMPT_TOTAL_BUDGET_CHARS", "6500")))
     hermes_timeout = int(os.getenv("HERMES_TIMEOUT", "180"))
+    direct_model_timeout_seconds = max(0, int(os.getenv("DIRECT_MODEL_TIMEOUT_SECONDS", "0")))
     min_seconds_between_replies = float(os.getenv("MIN_SECONDS_BETWEEN_REPLIES", "2"))
     context_max_messages = int(os.getenv("CONTEXT_MAX_MESSAGES", "20"))
     context_summary_max = int(os.getenv("CONTEXT_SUMMARY_MAX", "30"))
@@ -312,6 +328,7 @@ def load_config(base_dir: Path | None = None) -> Config:
     max_pending_direct_replies = int(os.getenv("MAX_PENDING_DIRECT_REPLIES", str(max(20, max_pending_replies))))
     direct_coalesce_window_ms = max(0, int(os.getenv("DIRECT_COALESCE_WINDOW_MS", "0")))
     max_reply_chars = int(os.getenv("MAX_REPLY_CHARS", "450"))
+    direct_max_output_chars = max(0, int(os.getenv("DIRECT_MAX_OUTPUT_CHARS", "0")))
     punctuation_style_enabled = _bool_env("PUNCTUATION_STYLE_ENABLED", "false")
     skip_unclear_mentions = os.getenv("SKIP_UNCLEAR_MENTIONS", "true").lower() not in {"0", "false", "no"}
     context_persist_enabled = _bool_env("CONTEXT_PERSIST_ENABLED", "false")
@@ -455,6 +472,13 @@ def load_config(base_dir: Path | None = None) -> Config:
         hermes_fallback_provider=hermes_fallback_provider,
         hermes_fallback_provider_base_url=hermes_fallback_provider_base_url,
         hermes_fallback_api_key_env=hermes_fallback_api_key_env,
+        direct_fast_model_alias=direct_fast_model_alias,
+        direct_strong_model_alias=direct_strong_model_alias,
+        direct_chat_model_provider=direct_chat_model_provider,
+        direct_chat_model_base_url=direct_chat_model_base_url,
+        direct_chat_model_api_key_env=direct_chat_model_api_key_env,
+        direct_model_timeout_seconds=direct_model_timeout_seconds,
+        direct_max_output_chars=direct_max_output_chars,
         hermes_model_by_group=hermes_model_by_group,
         hermes_provider_by_group=hermes_provider_by_group,
         hermes_group_sessions_enabled=hermes_group_sessions_enabled,

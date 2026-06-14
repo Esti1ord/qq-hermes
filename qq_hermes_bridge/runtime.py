@@ -98,6 +98,14 @@ HERMES_FALLBACK_MODEL = _env_first("VICE_CHAT_MODEL", "HERMES_FALLBACK_MODEL", d
 HERMES_FALLBACK_PROVIDER = _env_first("VICE_CHAT_MODEL_PROVIDER", "HERMES_FALLBACK_PROVIDER", default=config_utils.DEFAULT_FALLBACK_CHAT_PROVIDER)
 HERMES_FALLBACK_PROVIDER_BASE_URL = _env_first(*config_utils.FALLBACK_CHAT_PROVIDER_URL_ENV_NAMES)
 HERMES_FALLBACK_API_KEY_ENV = config_utils.api_key_env_name_from_groups(config_utils.FALLBACK_CHAT_API_KEY_ENV_GROUPS)
+DIRECT_FAST_MODEL_ALIAS = _env_first("DIRECT_FAST_MODEL_ALIAS", default="")
+DIRECT_STRONG_MODEL_ALIAS = _env_first("DIRECT_STRONG_MODEL_ALIAS", default="")
+DIRECT_CHAT_MODEL_PROVIDER = _env_first("DIRECT_CHAT_MODEL_PROVIDER", default="")
+DIRECT_CHAT_MODEL_BASE_URL = _env_first("DIRECT_CHAT_MODEL_URL", "DIRECT_CHAT_MODEL_BASE_URL")
+DIRECT_CHAT_MODEL_API_KEY_ENV = _api_key_env_name(
+    explicit_names=("DIRECT_CHAT_MODEL_API_KEY_ENV",),
+    raw_names=("DIRECT_CHAT_MODEL_API_KEY", "DIRECT_CHAT_MODEL_API"),
+)
 HERMES_MODEL_BY_GROUP = config_utils.parse_group_str_map(os.getenv("HERMES_MODEL_BY_GROUP", ""))
 HERMES_PROVIDER_BY_GROUP = config_utils.parse_group_str_map(os.getenv("HERMES_PROVIDER_BY_GROUP", ""))
 HERMES_GROUP_SESSIONS_ENABLED = os.getenv("HERMES_GROUP_SESSIONS_ENABLED", "true").lower() in {"1", "true", "yes"}
@@ -111,6 +119,7 @@ MAX_PROMPT_CHARS = int(os.getenv("MAX_PROMPT_CHARS", "3500"))
 DIRECT_PROMPT_PROFILE = prompt_service.normalize_direct_prompt_profile(os.getenv("DIRECT_PROMPT_PROFILE", "fast"))
 DIRECT_PROMPT_TOTAL_BUDGET_CHARS = max(0, int(os.getenv("DIRECT_PROMPT_TOTAL_BUDGET_CHARS", "6500")))
 HERMES_TIMEOUT = int(os.getenv("HERMES_TIMEOUT", "180"))
+DIRECT_MODEL_TIMEOUT_SECONDS = max(0, int(os.getenv("DIRECT_MODEL_TIMEOUT_SECONDS", "0")))
 MIN_SECONDS_BETWEEN_REPLIES = float(os.getenv("MIN_SECONDS_BETWEEN_REPLIES", "2"))
 CONTEXT_MAX_MESSAGES = int(os.getenv("CONTEXT_MAX_MESSAGES", "20"))
 CONTEXT_SUMMARY_MAX = int(os.getenv("CONTEXT_SUMMARY_MAX", "30"))
@@ -128,6 +137,7 @@ MAX_PENDING_REPLIES = int(os.getenv("MAX_PENDING_REPLIES", "3"))
 MAX_PENDING_DIRECT_REPLIES = int(os.getenv("MAX_PENDING_DIRECT_REPLIES", str(max(20, MAX_PENDING_REPLIES))))
 DIRECT_COALESCE_WINDOW_MS = max(0, int(os.getenv("DIRECT_COALESCE_WINDOW_MS", "0")))
 MAX_REPLY_CHARS = int(os.getenv("MAX_REPLY_CHARS", "450"))
+DIRECT_MAX_OUTPUT_CHARS = max(0, int(os.getenv("DIRECT_MAX_OUTPUT_CHARS", "0")))
 PUNCTUATION_STYLE_ENABLED = os.getenv("PUNCTUATION_STYLE_ENABLED", "false").lower() in {"1", "true", "yes"}
 SKIP_UNCLEAR_MENTIONS = os.getenv("SKIP_UNCLEAR_MENTIONS", "true").lower() not in {"0", "false", "no"}
 CONTEXT_PERSIST_ENABLED = os.getenv("CONTEXT_PERSIST_ENABLED", "false").lower() in {"1", "true", "yes"}
@@ -975,13 +985,21 @@ def normalize_reply_linebreaks(text: str) -> str:
     return text_utils.normalize_reply_linebreaks(text)
 
 
-def finalize_reply(text: str) -> str:
+def finalize_reply_with_limit(text: str, max_chars: int) -> str:
     return text_utils.finalize_reply(
         text,
-        max_chars=MAX_REPLY_CHARS,
+        max_chars=max_chars,
         empty_reply=pick_template("empty_reply", text or ""),
         punctuation_style_enabled=PUNCTUATION_STYLE_ENABLED,
     )
+
+
+def finalize_reply(text: str) -> str:
+    return finalize_reply_with_limit(text, MAX_REPLY_CHARS)
+
+
+def finalize_direct_reply(text: str) -> str:
+    return finalize_reply_with_limit(text, direct_max_output_chars())
 
 
 def prepare_reply_text(text: str) -> str:
@@ -2386,7 +2404,51 @@ def hermes_provider_for_group(group_id: int | None) -> str:
     return HERMES_PROVIDER
 
 
-def build_hermes_cmd(prompt: str, group_id: int | None = None, use_group_session: bool = True, model: str | None = None, provider: str | None = None) -> list[str]:
+def direct_fast_lane_configured() -> bool:
+    return any(
+        (
+            DIRECT_FAST_MODEL_ALIAS,
+            DIRECT_STRONG_MODEL_ALIAS,
+            DIRECT_CHAT_MODEL_PROVIDER,
+            DIRECT_CHAT_MODEL_BASE_URL,
+            DIRECT_CHAT_MODEL_API_KEY_ENV,
+            DIRECT_MODEL_TIMEOUT_SECONDS,
+            DIRECT_MAX_OUTPUT_CHARS,
+        )
+    )
+
+
+def direct_transport_override_configured() -> bool:
+    return bool(DIRECT_CHAT_MODEL_PROVIDER or DIRECT_CHAT_MODEL_BASE_URL or DIRECT_CHAT_MODEL_API_KEY_ENV)
+
+
+def direct_model_for_group(group_id: int | None, *, strong: bool = False) -> str:
+    if strong and DIRECT_STRONG_MODEL_ALIAS:
+        return DIRECT_STRONG_MODEL_ALIAS
+    if DIRECT_FAST_MODEL_ALIAS:
+        return DIRECT_FAST_MODEL_ALIAS
+    return hermes_model_for_group(group_id)
+
+
+def direct_provider_for_group(group_id: int | None) -> str:
+    return DIRECT_CHAT_MODEL_PROVIDER or hermes_provider_for_group(group_id)
+
+
+def direct_model_timeout_seconds() -> int:
+    return DIRECT_MODEL_TIMEOUT_SECONDS or HERMES_TIMEOUT
+
+
+def direct_max_output_chars() -> int:
+    return DIRECT_MAX_OUTPUT_CHARS or MAX_REPLY_CHARS
+
+
+def build_hermes_cmd(
+    prompt: str,
+    group_id: int | None = None,
+    use_group_session: bool = True,
+    model: str | None = None,
+    provider: str | None = None,
+) -> list[str]:
     return hermes_runtime.build_hermes_cmd(
         prompt,
         group_id=group_id,
@@ -2402,19 +2464,33 @@ def build_hermes_cmd(prompt: str, group_id: int | None = None, use_group_session
     )
 
 
-def run_hermes_cmd(cmd: list[str], *, purpose: str = "unknown", group_id: int | None = None, use_group_session: bool = True, input_chars: int = 0) -> subprocess.CompletedProcess[str] | None:
+def run_hermes_cmd(
+    cmd: list[str],
+    *,
+    purpose: str = "unknown",
+    group_id: int | None = None,
+    use_group_session: bool = True,
+    input_chars: int = 0,
+    timeout_s: int | None = None,
+    model_configured: bool | None = None,
+    provider_configured: bool | None = None,
+) -> subprocess.CompletedProcess[str] | None:
+    effective_timeout_s = HERMES_TIMEOUT if timeout_s is None else max(1, int(timeout_s or HERMES_TIMEOUT))
+    effective_model_configured = bool("--model" in cmd) if model_configured is None else bool(model_configured)
+    effective_provider_configured = bool("--provider" in cmd) if provider_configured is None else bool(provider_configured)
     log({
         "type": "hermes_start",
         "purpose": purpose,
         "group_id": group_id,
         "use_group_session": use_group_session,
-        "has_model": "--model" in cmd,
-        "has_provider": "--provider" in cmd,
+        "has_model": effective_model_configured,
+        "has_provider": effective_provider_configured,
+        "timeout_s": effective_timeout_s,
     })
     start = time.monotonic()
     phase = "fallback" if "fallback" in str(purpose or "").lower() else "primary"
     try:
-        result = subprocess.run(cmd, text=True, capture_output=True, timeout=HERMES_TIMEOUT, cwd=str(BASE_DIR))
+        result = subprocess.run(cmd, text=True, capture_output=True, timeout=effective_timeout_s, cwd=str(BASE_DIR))
         runtime_stat(
             "hermes_call",
             purpose=purpose,
@@ -2425,9 +2501,9 @@ def run_hermes_cmd(cmd: list[str], *, purpose: str = "unknown", group_id: int | 
             returncode=result.returncode,
             input_chars=input_chars,
             output_len=len(result.stdout or "") + len(result.stderr or ""),
-            timeout_s=HERMES_TIMEOUT,
-            model_configured=bool(hermes_model_for_group(group_id)),
-            provider_configured=bool(hermes_provider_for_group(group_id)),
+            timeout_s=effective_timeout_s,
+            model_configured=effective_model_configured,
+            provider_configured=effective_provider_configured,
             transport="cli",
             phase=phase,
         )
@@ -2445,7 +2521,7 @@ def run_hermes_cmd(cmd: list[str], *, purpose: str = "unknown", group_id: int | 
             ok=False,
             error="FileNotFoundError",
             input_chars=input_chars,
-            timeout_s=HERMES_TIMEOUT,
+            timeout_s=effective_timeout_s,
             transport="cli",
             phase=phase,
         )
@@ -2462,13 +2538,13 @@ def run_hermes_cmd(cmd: list[str], *, purpose: str = "unknown", group_id: int | 
             ok=False,
             error="TimeoutExpired",
             input_chars=input_chars,
-            timeout_s=HERMES_TIMEOUT,
+            timeout_s=effective_timeout_s,
             transport="cli",
             phase=phase,
         )
         increment_runtime_counter("hermes_calls")
         increment_runtime_counter("hermes_errors")
-        log({"type": "hermes_error", "error": "TimeoutExpired", "timeout": HERMES_TIMEOUT})
+        log({"type": "hermes_error", "error": "TimeoutExpired", "timeout": effective_timeout_s})
     except Exception as exc:
         runtime_stat(
             "hermes_call",
@@ -2479,7 +2555,7 @@ def run_hermes_cmd(cmd: list[str], *, purpose: str = "unknown", group_id: int | 
             ok=False,
             error=type(exc).__name__,
             input_chars=input_chars,
-            timeout_s=HERMES_TIMEOUT,
+            timeout_s=effective_timeout_s,
             transport="cli",
             phase=phase,
         )
@@ -2605,6 +2681,22 @@ def primary_text_http_config_for_group(group_id: int | None = None) -> dict[str,
     )
 
 
+def direct_text_http_config_for_group(group_id: int | None = None, *, strong: bool = False) -> dict[str, str] | None:
+    if direct_transport_override_configured():
+        return text_model_http_config(
+            model=direct_model_for_group(group_id, strong=strong),
+            provider=direct_provider_for_group(group_id),
+            base_url=DIRECT_CHAT_MODEL_BASE_URL,
+            api_key_env=DIRECT_CHAT_MODEL_API_KEY_ENV,
+        )
+    return text_model_http_config(
+        model=direct_model_for_group(group_id, strong=strong),
+        provider=hermes_provider_for_group(group_id),
+        base_url=HERMES_PROVIDER_BASE_URL,
+        api_key_env=HERMES_API_KEY_ENV,
+    )
+
+
 def fallback_text_http_config() -> dict[str, str] | None:
     return text_model_http_config(
         model=HERMES_FALLBACK_MODEL,
@@ -2640,7 +2732,11 @@ def run_text_http_result(
     group_id: int | None = None,
     purpose: str = "unknown",
     phase: str = "primary",
+    timeout_s: int | None = None,
+    max_reply_chars: int | None = None,
 ) -> dict[str, Any]:
+    effective_timeout_s = HERMES_TIMEOUT if timeout_s is None else max(1, int(timeout_s or HERMES_TIMEOUT))
+    effective_max_reply_chars = MAX_REPLY_CHARS if max_reply_chars is None else max(1, int(max_reply_chars or MAX_REPLY_CHARS))
     start = time.monotonic()
     log({
         "type": "text_http_start",
@@ -2651,14 +2747,16 @@ def run_text_http_result(
         "has_provider": bool(config.get("provider")),
         "has_base_url": bool(config.get("base_url")),
         "has_api_key_env": bool(config.get("api_key_env")),
+        "timeout_s": effective_timeout_s,
+        "output_cap_chars": effective_max_reply_chars,
     })
     result = hermes_runtime.run_openai_compatible_chat_completion(
         prompt,
         base_url=config.get("base_url", ""),
         model=config.get("model", ""),
         api_key_env=config.get("api_key_env", ""),
-        timeout=HERMES_TIMEOUT,
-        max_reply_chars=MAX_REPLY_CHARS,
+        timeout=effective_timeout_s,
+        max_reply_chars=effective_max_reply_chars,
         client=text_http_client(),
     )
     duration = runtime_stats.duration_ms(start)
@@ -2673,7 +2771,8 @@ def run_text_http_result(
         error="" if ok else str(result.get("reason") or "unknown"),
         input_chars=len(prompt),
         output_len=len(str(result.get("text") or "")),
-        timeout_s=HERMES_TIMEOUT,
+        timeout_s=effective_timeout_s,
+        output_cap_chars=effective_max_reply_chars,
         model_configured=bool(config.get("model")),
         provider_configured=bool(config.get("provider")),
         transport="http",
@@ -2695,12 +2794,24 @@ def run_text_http_result(
     return result
 
 
-def hermes_fallback_available(group_id: int | None = None) -> bool:
+def hermes_fallback_available(
+    group_id: int | None = None,
+    *,
+    active_model: str | None = None,
+    active_provider: str | None = None,
+    active_base_url: str | None = None,
+    active_api_key_env: str | None = None,
+) -> bool:
     if not HERMES_FALLBACK_ENABLED:
         return False
     if not (HERMES_FALLBACK_MODEL or HERMES_FALLBACK_PROVIDER):
         return False
-    active = _model_provider_key(hermes_model_for_group(group_id), hermes_provider_for_group(group_id), HERMES_PROVIDER_BASE_URL, HERMES_API_KEY_ENV)
+    active = _model_provider_key(
+        hermes_model_for_group(group_id) if active_model is None else active_model,
+        hermes_provider_for_group(group_id) if active_provider is None else active_provider,
+        HERMES_PROVIDER_BASE_URL if active_base_url is None else active_base_url,
+        HERMES_API_KEY_ENV if active_api_key_env is None else active_api_key_env,
+    )
     fallback = _model_provider_key(HERMES_FALLBACK_MODEL, HERMES_FALLBACK_PROVIDER, HERMES_FALLBACK_PROVIDER_BASE_URL, HERMES_FALLBACK_API_KEY_ENV)
     return fallback != active
 
@@ -2748,8 +2859,26 @@ def _hermes_result_needs_fallback(result: dict[str, Any]) -> bool:
     return not result.get("ok") or not str(result.get("text") or "").strip()
 
 
-def run_hermes_fallback_result(prompt: str, group_id: int | None = None, *, purpose: str = "unknown", primary_reason: str = "") -> dict[str, Any] | None:
-    if not hermes_fallback_available(group_id):
+def run_hermes_fallback_result(
+    prompt: str,
+    group_id: int | None = None,
+    *,
+    purpose: str = "unknown",
+    primary_reason: str = "",
+    active_model: str | None = None,
+    active_provider: str | None = None,
+    active_base_url: str | None = None,
+    active_api_key_env: str | None = None,
+    timeout_s: int | None = None,
+    max_reply_chars: int | None = None,
+) -> dict[str, Any] | None:
+    if not hermes_fallback_available(
+        group_id,
+        active_model=active_model,
+        active_provider=active_provider,
+        active_base_url=active_base_url,
+        active_api_key_env=active_api_key_env,
+    ):
         return None
     fallback_purpose = f"{purpose}_fallback" if purpose else "fallback"
     log({"type": "hermes_fallback_attempt", "group_id": group_id, "purpose": purpose, "primary_reason": primary_reason or "unknown"})
@@ -2761,6 +2890,8 @@ def run_hermes_fallback_result(prompt: str, group_id: int | None = None, *, purp
             group_id=group_id,
             purpose=fallback_purpose,
             phase="fallback",
+            timeout_s=timeout_s,
+            max_reply_chars=max_reply_chars,
         )
     else:
         p = run_hermes_cmd(
@@ -2775,6 +2906,7 @@ def run_hermes_fallback_result(prompt: str, group_id: int | None = None, *, purp
             group_id=group_id,
             use_group_session=False,
             input_chars=len(prompt),
+            timeout_s=timeout_s,
         )
         result = _hermes_raw_result_from_process(
             p,
@@ -2826,6 +2958,81 @@ def run_hermes_raw(prompt: str, group_id: int | None = None, use_group_session: 
     return str(run_hermes_raw_result(prompt, group_id, use_group_session, purpose=purpose).get("text") or "")
 
 
+def run_direct_hermes_raw_result(
+    prompt: str,
+    group_id: int | None = None,
+    *,
+    use_group_session: bool = True,
+    purpose: str = "direct_reply",
+    strong: bool = False,
+) -> dict[str, Any]:
+    timeout_s = direct_model_timeout_seconds()
+    max_output_chars = direct_max_output_chars()
+    http_config = direct_text_http_config_for_group(group_id, strong=strong)
+    if http_config is not None:
+        primary = run_text_http_result(
+            prompt,
+            config=http_config,
+            group_id=group_id,
+            purpose=purpose,
+            phase="primary",
+            timeout_s=timeout_s,
+            max_reply_chars=max_output_chars,
+        )
+        active_model = http_config.get("model") or ""
+        active_provider = http_config.get("provider") or ""
+        active_base_url = http_config.get("base_url") or ""
+        active_api_key_env = http_config.get("api_key_env") or ""
+    else:
+        model = direct_model_for_group(group_id, strong=strong)
+        provider = direct_provider_for_group(group_id)
+        if use_group_session:
+            compact_group_hermes_session_if_needed(group_id)
+        p = run_hermes_cmd(
+            build_hermes_cmd(
+                prompt,
+                group_id=group_id,
+                use_group_session=use_group_session,
+                model=model,
+                provider=provider,
+            ),
+            purpose=purpose,
+            group_id=group_id,
+            use_group_session=use_group_session,
+            input_chars=len(prompt),
+            timeout_s=timeout_s,
+            model_configured=bool(model),
+            provider_configured=bool(provider),
+        )
+        primary = _hermes_raw_result_from_process(
+            p,
+            prompt=prompt,
+            group_id=group_id,
+            use_group_session=use_group_session,
+            allow_session_bootstrap=True,
+        )
+        active_model = model
+        active_provider = provider
+        active_base_url = ""
+        active_api_key_env = ""
+    if _hermes_result_needs_fallback(primary):
+        fallback = run_hermes_fallback_result(
+            prompt,
+            group_id,
+            purpose=purpose,
+            primary_reason=str(primary.get("reason") or "unknown"),
+            active_model=active_model,
+            active_provider=active_provider,
+            active_base_url=active_base_url,
+            active_api_key_env=active_api_key_env,
+            timeout_s=timeout_s,
+            max_reply_chars=max_output_chars,
+        )
+        if fallback is not None:
+            return fallback
+    return primary
+
+
 def run_hermes(prompt: str, group_id: int | None = None, use_group_session: bool = True, purpose: str = "unknown") -> str:
     raw = run_hermes_raw(prompt, group_id, use_group_session, purpose=purpose)
     if not raw:
@@ -2835,6 +3042,16 @@ def run_hermes(prompt: str, group_id: int | None = None, use_group_session: bool
 
 
 def run_direct_hermes_raw(prompt: str, group_id: int | None = None, *, use_group_session: bool = True, purpose: str = "direct_reply") -> str:
+    if direct_fast_lane_configured():
+        return str(
+            run_direct_hermes_raw_result(
+                prompt,
+                group_id,
+                use_group_session=use_group_session,
+                purpose=purpose,
+            ).get("text")
+            or ""
+        )
     try:
         return run_hermes_raw(prompt, group_id, use_group_session=use_group_session, purpose=purpose)
     except TypeError as exc:
@@ -2860,7 +3077,7 @@ def generate_direct_reply(prompt: str, group_id: int | None = None) -> dict[str,
         reply = pick_template("hermes_error", str(group_id or ""))
         log({"type": "direct_reply_generation_failed", "group_id": group_id, "reason": "direct_hermes_empty"})
         return {"ok": False, "generation_failed": True, "reason": "direct_hermes_empty", "reply": reply}
-    return {"ok": True, "generation_failed": False, "reply": finalize_reply(raw)}
+    return {"ok": True, "generation_failed": False, "reply": finalize_direct_reply(raw)}
 
 
 def direct_failure_notice_for_event(event: dict[str, Any]) -> str:

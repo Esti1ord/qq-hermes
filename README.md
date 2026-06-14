@@ -165,6 +165,8 @@ VICE_CHAT_MODEL=deepseekv4flash
 
 推荐优先使用 `PRIMARY_CHAT_MODEL` / `PRIMARY_CHAT_MODEL_PROVIDER` 和 `VICE_CHAT_MODEL` / `VICE_CHAT_MODEL_PROVIDER`。旧键 `HERMES_MODEL` / `HERMES_PROVIDER` / `HERMES_FALLBACK_MODEL` / `HERMES_FALLBACK_PROVIDER` 仍兼容。主文本 provider 为 `custom`、`model`、`openai`、`openai_compatible`、`openai-gpt`、`axonhub`、`siliconflow` 等 OpenAI-compatible 别名，并且配置了 `PRIMARY_CHAT_MODEL_BASE_URL` 或 `PRIMARY_CHAT_MODEL_URL` 以及 API-key env 名时，Bridge 会直接请求 `/chat/completions`；如果已有自定义通道配置使用 `CUSTOM_CHAT_MODEL_BASE_URL` / `CUSTOM_CHAT_MODEL_URL` / `CUSTOM_PROVIDER_BASE_URL` / `CUSTOM_PROVIDER_URL` 与 `CUSTOM_CHAT_MODEL_API_KEY` / `CUSTOM_CHAT_MODEL_API` / `CUSTOM_API_KEY` 等别名，也会在 canonical `PRIMARY_CHAT_*` 未设置时生效。否则继续走 Hermes CLI。fallback 默认使用 Hermes provider `deepseek`，旧显示名 `官方` 会安全归一化为 `deepseek`。URL、API key env 名和值、prompt 和模型输出都不应写进日志、issue、聊天或提交记录。
 
+Direct 回复还可以单独配置 fast-lane 覆盖：`DIRECT_FAST_MODEL_ALIAS` / `DIRECT_STRONG_MODEL_ALIAS` 只覆盖 direct 使用的模型别名；`DIRECT_MODEL_TIMEOUT_SECONDS` 和 `DIRECT_MAX_OUTPUT_CHARS` 只覆盖 direct 模型超时和回复输出上限；需要 direct 走独立 OpenAI-compatible 通道时再配置 `DIRECT_CHAT_MODEL_PROVIDER`、`DIRECT_CHAT_MODEL_BASE_URL` 或 `DIRECT_CHAT_MODEL_URL`，以及 `DIRECT_CHAT_MODEL_API_KEY_ENV`（或本地 `.env` 里的 raw key 别名）。这些值为空或 `0` 时完全继承普通主文本路由，不影响 proactive、摘要、命令等其它 Hermes 调用；日志/metrics 只记录是否配置、timeout 和输出上限等安全元数据，不记录模型名、provider URL、API-key env 名、prompt 或输出。
+
 修改 `.env` 后通常需要重启 bridge 才会生效。Direct 回复默认按消息逐条排队；如需在高频同一群友连续 @ 时减少重复模型调用，可把 `DIRECT_COALESCE_WINDOW_MS` 从默认 `0` 调成很小的毫秒窗口。该开关只合并未开始处理、同群同发送者同 direct 路由的普通文本 direct intent；回复引用、图片/OCR、命令、proactive 和不同发送者不会合并，设回 `0` 即可回滚。
 
 ## 启动和状态检查
