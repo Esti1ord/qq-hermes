@@ -121,6 +121,31 @@ def test_metrics_expose_send_ocr_deadline_and_skip_breakdowns_safely():
     assert "message" not in rendered
 
 
+def test_metrics_expose_queue_coalescing_events_safely():
+    metrics.observe_runtime_stat(
+        "queue_event",
+        {
+            "kind": "direct",
+            "queued": True,
+            "coalesced": True,
+            "merged_count": 1,
+            "coalesced_count": 2,
+            "coalesce_window_ms": 500,
+            "direct_queue_size": 1,
+            "proactive_queue_size": 0,
+            "group_id": 975805598,
+            "message": "SECRET_CHAT_TEXT",
+        },
+    )
+
+    rendered = metrics.generate_latest()
+
+    assert 'qq_hermes_queue_events_total{status="coalesced",type="direct"} 1' in rendered
+    assert 'qq_hermes_queue_size{type="direct"} 1' in rendered
+    assert "group_id" not in rendered
+    assert "SECRET_CHAT_TEXT" not in rendered
+    assert "message" not in rendered
+
 def test_metrics_drop_unsafe_or_high_cardinality_labels_and_values():
     metrics._registry.counter(  # noqa: SLF001 - focused safety regression for the lightweight exporter
         "messages_total",

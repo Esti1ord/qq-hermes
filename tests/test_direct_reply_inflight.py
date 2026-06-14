@@ -33,6 +33,7 @@ def configure_bridge(bridge):
     bridge.MIN_SECONDS_BETWEEN_REPLIES = 0.0
     bridge.USER_COOLDOWN_SECONDS = 0.0
     bridge.MAX_PENDING_DIRECT_REPLIES = 20
+    bridge.DIRECT_COALESCE_WINDOW_MS = 0
     bridge.PROACTIVE_TRIGGER_THRESHOLD = 70.0
     bridge.PROACTIVE_TRIGGER_THRESHOLDS_BY_GROUP = {}
     bridge.PROACTIVE_GROUP_COOLDOWN_SECONDS = 900.0
@@ -141,6 +142,7 @@ def test_same_user_burst_is_queued_while_direct_worker_active(monkeypatch):
     assert sent == [(975805598, "[CQ:reply,id=801]第一个回答"), (975805598, "[CQ:reply,id=802]第二个回答")]
 
 
+
 def test_same_user_sequential_direct_questions_are_not_cooldown_suppressed(monkeypatch):
     bridge = load_bridge_module()
     configure_bridge(bridge)
@@ -173,6 +175,90 @@ def test_same_user_sequential_direct_questions_are_not_cooldown_suppressed(monke
     assert second["queued"] is True
     assert len(calls) == 2
     assert sent == [(975805598, "[CQ:reply,id=9011]第一次回答"), (975805598, "[CQ:reply,id=9012]第二次回答")]
+
+
+def test_same_user_direct_burst_can_coalesce_into_one_prompt_and_reply_latest_message(monkeypatch):
+    bridge = load_bridge_module()
+    configure_bridge(bridge)
+    bridge.DIRECT_COALESCE_WINDOW_MS = 100
+    bridge.RUNTIME_STATS_ENABLED = True
+    bridge.PERF_OBS_ENABLED = True
+    prompts = []
+    sent = []
+    stats = []
+
+    def fake_run_hermes_raw(prompt, group_id=None, use_group_session=True, purpose="unknown"):
+        prompts.append(prompt)
+        return "合并回答"
+
+    async def fake_send(group_id, message):
+        sent.append((group_id, message))
+        return {"ok": True}
+
+    monkeypatch.setattr(bridge, "run_hermes_raw", fake_run_hermes_raw)
+    monkeypatch.setattr(bridge, "send_group_msg", fake_send)
+    monkeypatch.setattr(bridge, "runtime_stat", lambda stat, **fields: stats.append({"stat": stat, **fields}))
+
+    async def run_two():
+        first = await bridge.onebot_event(FakeRequest(make_at_event(text="Esti 第一条 SECRET_A", user_id=1, message_id=7101)))
+        second = await bridge.onebot_event(FakeRequest(make_at_event(text="Esti 第二条 SECRET_B", user_id=1, message_id=7102)))
+        await bridge.wait_reply_worker(975805598)
+        return first, second
+
+    first, second = asyncio.run(run_two())
+
+    assert first["queued"] is True
+    assert second["queued"] is True
+    assert len(prompts) == 1
+    assert "同一位群友在短时间内连续发了几条消息" in prompts[0]
+    assert prompts[0].index("SECRET_A") < prompts[0].index("SECRET_B")
+    assert sent == [(975805598, "[CQ:reply,id=7102]合并回答")]
+    queue_events = [item for item in stats if item["stat"] == "queue_event"]
+    assert any(item.get("coalesced") is True and item.get("coalesced_count") == 2 for item in queue_events)
+    direct_results = [item for item in stats if item["stat"] == "direct_reply_result"]
+    assert direct_results[-1]["coalesced_count"] == 2
+    rendered_stats = repr(stats)
+    assert "SECRET_A" not in rendered_stats
+    assert "SECRET_B" not in rendered_stats
+
+
+def test_same_user_direct_burst_does_not_coalesce_reply_or_media_messages(monkeypatch):
+    bridge = load_bridge_module()
+    configure_bridge(bridge)
+    bridge.DIRECT_COALESCE_WINDOW_MS = 100
+    prompts = []
+    sent = []
+    outputs = iter(["第一答", "第二答"])
+
+    def fake_run_hermes_raw(prompt, group_id=None, use_group_session=True, purpose="unknown"):
+        prompts.append(prompt)
+        return next(outputs)
+
+    async def fake_send(group_id, message):
+        sent.append((group_id, message))
+        return {"ok": True}
+
+    monkeypatch.setattr(bridge, "run_hermes_raw", fake_run_hermes_raw)
+    monkeypatch.setattr(bridge, "send_group_msg", fake_send)
+
+    reply_event = make_at_event(text="Esti 第二条", user_id=1, message_id=7202)
+    reply_event["message"] = [
+        {"type": "reply", "data": {"id": "7200"}},
+        {"type": "text", "data": {"text": "Esti 第二条"}},
+    ]
+
+    async def run_two():
+        first = await bridge.onebot_event(FakeRequest(make_at_event(text="Esti 第一条", user_id=1, message_id=7201)))
+        second = await bridge.onebot_event(FakeRequest(reply_event))
+        await bridge.wait_reply_worker(975805598)
+        return first, second
+
+    first, second = asyncio.run(run_two())
+
+    assert first["queued"] is True
+    assert second["queued"] is True
+    assert len(prompts) == 2
+    assert sent == [(975805598, "[CQ:reply,id=7201]第一答"), (975805598, "[CQ:reply,id=7202]第二答")]
 
 
 def test_process_direct_reply_intent_can_run_without_queue_wrapper(monkeypatch):

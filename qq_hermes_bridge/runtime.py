@@ -126,6 +126,7 @@ KNOWLEDGE_MAX_CHARS = int(os.getenv("KNOWLEDGE_MAX_CHARS", "3500"))
 USER_COOLDOWN_SECONDS = float(os.getenv("USER_COOLDOWN_SECONDS", "20"))
 MAX_PENDING_REPLIES = int(os.getenv("MAX_PENDING_REPLIES", "3"))
 MAX_PENDING_DIRECT_REPLIES = int(os.getenv("MAX_PENDING_DIRECT_REPLIES", str(max(20, MAX_PENDING_REPLIES))))
+DIRECT_COALESCE_WINDOW_MS = max(0, int(os.getenv("DIRECT_COALESCE_WINDOW_MS", "0")))
 MAX_REPLY_CHARS = int(os.getenv("MAX_REPLY_CHARS", "450"))
 PUNCTUATION_STYLE_ENABLED = os.getenv("PUNCTUATION_STYLE_ENABLED", "false").lower() in {"1", "true", "yes"}
 SKIP_UNCLEAR_MENTIONS = os.getenv("SKIP_UNCLEAR_MENTIONS", "true").lower() not in {"0", "false", "no"}
@@ -733,26 +734,40 @@ def enqueue_reply_intent(group_id: int, intent: dict[str, Any]) -> dict[str, Any
         max_pending_replies=MAX_PENDING_REPLIES,
         proactive_rate_limit_max_replies=PROACTIVE_RATE_LIMIT_MAX_REPLIES,
         max_pending_direct_replies=MAX_PENDING_DIRECT_REPLIES,
+        direct_coalesce_window_ms=DIRECT_COALESCE_WINDOW_MS,
+        now=now,
     )
     log({
-        "type": "reply_queued" if queued.get("queued") else "reply_queue_rejected",
+        "type": "reply_coalesced" if queued.get("coalesced") else ("reply_queued" if queued.get("queued") else "reply_queue_rejected"),
         "group_id": group_id,
         "kind": queued.get("kind") or intent.get("kind"),
         "queued": queued.get("queued"),
+        "coalesced": bool(queued.get("coalesced")),
         "queue_size": queued.get("queue_size"),
         "queue_limit": queued.get("queue_limit"),
         "reason": queued.get("reason"),
+        "merged_count": queued.get("merged_count"),
+        "coalesced_count": queued.get("coalesced_count"),
+        "coalesce_window_ms": queued.get("coalesce_window_ms"),
     })
-    increment_runtime_counter("reply_enqueued" if queued.get("queued") else "queue_full")
+    if queued.get("coalesced"):
+        increment_runtime_counter("direct_coalesced")
+    else:
+        increment_runtime_counter("reply_enqueued" if queued.get("queued") else "queue_full")
     emit_perf_stat(
         "queue_event",
         group_id=group_id,
         interaction_id=interaction_id,
         kind=queued.get("kind") or intent.get("kind"),
         queued=bool(queued.get("queued")),
+        coalesced=bool(queued.get("coalesced")),
         queue_size=queued.get("queue_size"),
         queue_limit=queued.get("queue_limit"),
         reason=queued.get("reason") or "",
+        status=queued.get("status") or ("coalesced" if queued.get("coalesced") else ("queued" if queued.get("queued") else "rejected")),
+        merged_count=queued.get("merged_count") or 0,
+        coalesced_count=queued.get("coalesced_count") or (1 if queued.get("queued") else 0),
+        coalesce_window_ms=queued.get("coalesce_window_ms") or DIRECT_COALESCE_WINDOW_MS,
         event_to_enqueue_ms=runtime_elapsed_ms(intent.get("_perf_event_received_at")),
         direct_queue_size=reply_queue_size_by_kind(group_id, "direct"),
         proactive_queue_size=reply_queue_size_by_kind(group_id, "proactive"),
@@ -3067,6 +3082,8 @@ def record_direct_reply_runtime_result(group_id: int, event: dict[str, Any], *, 
         suppressed_duplicate=result.get("ignored") == "duplicate_outbound",
         output_len=output_len,
         queue_remaining=result.get("queue_remaining", reply_queue_size(group_id)),
+        coalesced_count=perf.get("coalesced_count", 1),
+        coalesce_window_ms=perf.get("coalesce_window_ms", 0),
         queue_wait_ms=perf.get("queue_wait_ms", 0),
         prompt_build_ms=perf.get("prompt_build_ms", 0),
         generation_ms=perf.get("generation_ms", 0),
@@ -3116,6 +3133,7 @@ async def process_direct_reply_intent(group_id: int, queued_intent: dict[str, An
     global _last_reply_at
     event = queued_intent.get("event") or {}
     user_text = str(queued_intent.get("user_text") or "")
+    prompt_user_text = reply_queue.coalesced_user_text_for_prompt(queued_intent, default=user_text)
     media_context = str(queued_intent.get("media_context") or "（当前消息没有图片识别结果）")
     ocr_prompt_wait: dict[str, Any] = {"included": False, "status": "not_scheduled", "wait_ms": 0}
     trigger = queued_intent.get("trigger") or "at"
@@ -3126,7 +3144,13 @@ async def process_direct_reply_intent(group_id: int, queued_intent: dict[str, An
     event_received_at = queued_intent.get("_perf_event_received_at")
     prompt_build_ms = 0
     generation_ms = 0
-    perf: dict[str, Any] = {"interaction_id": interaction_id, "queue_wait_ms": queue_wait_ms, "event_received_at": event_received_at}
+    perf: dict[str, Any] = {
+        "interaction_id": interaction_id,
+        "queue_wait_ms": queue_wait_ms,
+        "event_received_at": event_received_at,
+        "coalesced_count": reply_queue.coalesced_count(queued_intent),
+        "coalesce_window_ms": int(queued_intent.get("_coalesced_window_ms") or 0),
+    }
     try:
         remember_bot_pending_reply(group_id, user_text, event.get("self_id"))
         pending_remembered = True
@@ -3146,7 +3170,7 @@ async def process_direct_reply_intent(group_id: int, queued_intent: dict[str, An
             prompt_media_context = media_context
         else:
             prompt_media_context = "（当前消息没有图片识别结果）"
-        prompt = build_prompt(event, user_text, prompt_media_context)
+        prompt = build_prompt(event, prompt_user_text, prompt_media_context)
         prompt_build_ms = runtime_elapsed_ms(prompt_start)
         generation_start = runtime_now()
         generated = await asyncio.to_thread(generate_direct_reply, prompt, group_id)
@@ -3519,8 +3543,18 @@ async def process_proactive_reply_intent(group_id: int, queued_intent: dict[str,
     )
 
 
+async def wait_direct_coalesce_window(group_id: int) -> None:
+    window_ms = max(0, int(DIRECT_COALESCE_WINDOW_MS or 0))
+    if window_ms <= 0:
+        return
+    if reply_queue_size_by_kind(group_id, "direct") <= 0:
+        return
+    await asyncio.sleep(window_ms / 1000.0)
+
+
 async def process_one_reply_intent(group_id: int) -> dict[str, Any]:
     async with reply_lock_for_group(group_id):
+        await wait_direct_coalesce_window(group_id)
         queued_intent = dequeue_reply_intent(group_id)
         if queued_intent is None:
             return {"ok": True, "ignored": "reply_queue_empty"}
@@ -3528,12 +3562,16 @@ async def process_one_reply_intent(group_id: int) -> dict[str, Any]:
         kind = str(queued_intent.get("kind") or "")
         interaction_id = str(queued_intent.get("_perf_interaction_id") or "")
         queue_wait_ms = runtime_elapsed_ms(queued_intent.get("_perf_enqueued_at"))
+        queued_intent["_reply_started"] = True
+        queued_intent["_direct_reply_started"] = kind == "direct"
         queued_intent["_perf_queue_wait_ms"] = queue_wait_ms
         emit_perf_stat(
             "reply_intent_dequeued",
             group_id=group_id,
             interaction_id=interaction_id,
             kind=kind,
+            coalesced_count=reply_queue.coalesced_count(queued_intent),
+            coalesce_window_ms=int(queued_intent.get("_coalesced_window_ms") or 0),
             queue_wait_ms=queue_wait_ms,
             direct_queue_size=reply_queue_size_by_kind(group_id, "direct"),
             proactive_queue_size=reply_queue_size_by_kind(group_id, "proactive"),
@@ -3685,6 +3723,7 @@ runtime_stat(
     context_persist_enabled=CONTEXT_PERSIST_ENABLED,
     proactive_enabled=PROACTIVE_ENABLED,
     group_sessions_enabled=HERMES_GROUP_SESSIONS_ENABLED,
+    direct_coalesce_window_ms=DIRECT_COALESCE_WINDOW_MS,
 )
 
 

@@ -91,6 +91,7 @@ class Config:
     user_cooldown_seconds: float
     max_pending_replies: int
     max_pending_direct_replies: int
+    direct_coalesce_window_ms: int
     max_reply_chars: int
     punctuation_style_enabled: bool
     skip_unclear_mentions: bool
@@ -309,6 +310,7 @@ def load_config(base_dir: Path | None = None) -> Config:
     user_cooldown_seconds = float(os.getenv("USER_COOLDOWN_SECONDS", "20"))
     max_pending_replies = int(os.getenv("MAX_PENDING_REPLIES", "3"))
     max_pending_direct_replies = int(os.getenv("MAX_PENDING_DIRECT_REPLIES", str(max(20, max_pending_replies))))
+    direct_coalesce_window_ms = max(0, int(os.getenv("DIRECT_COALESCE_WINDOW_MS", "0")))
     max_reply_chars = int(os.getenv("MAX_REPLY_CHARS", "450"))
     punctuation_style_enabled = _bool_env("PUNCTUATION_STYLE_ENABLED", "false")
     skip_unclear_mentions = os.getenv("SKIP_UNCLEAR_MENTIONS", "true").lower() not in {"0", "false", "no"}
@@ -481,6 +483,7 @@ def load_config(base_dir: Path | None = None) -> Config:
         user_cooldown_seconds=user_cooldown_seconds,
         max_pending_replies=max_pending_replies,
         max_pending_direct_replies=max_pending_direct_replies,
+        direct_coalesce_window_ms=direct_coalesce_window_ms,
         max_reply_chars=max_reply_chars,
         punctuation_style_enabled=punctuation_style_enabled,
         skip_unclear_mentions=skip_unclear_mentions,

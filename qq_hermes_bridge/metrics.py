@@ -462,6 +462,19 @@ def observe_runtime_stat(stat: str, fields: dict[str, Any]) -> None:
 
     if stat_name == "queue_event":
         _set_queue_gauges_from_fields(safe_fields)
+        if safe_fields.get("coalesced"):
+            try:
+                merged_count = max(1.0, float(safe_fields.get("merged_count") or 1))
+            except (TypeError, ValueError):
+                merged_count = 1.0
+            _registry.counter(
+                "queue_events_total",
+                "Reply queue events by type and status.",
+                merged_count,
+                type=_sanitize_label_value(safe_fields.get("kind") or "direct"),
+                status="coalesced",
+                group_id=safe_fields.get("group_id"),
+            )
         if not safe_fields.get("queued", True):
             _registry.counter(
                 "errors_total",
