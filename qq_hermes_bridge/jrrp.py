@@ -111,6 +111,7 @@ JRRP_SCORE_COMPONENTS: tuple[tuple[float, float, float], ...] = (
     (0.20, 65.0, 18.0),
     (0.10, 45.0, 22.0),
 )
+JRRP_SCORE_TOTAL_WEIGHT = sum(weight for weight, _, _ in JRRP_SCORE_COMPONENTS)
 JRRP_SCORE_RETRY_LIMIT = 64
 DEFAULT_LEVEL = DEFAULT_RESULTS["levels"][4]
 
@@ -148,7 +149,7 @@ def pick_option(options: Any, seed: str, salt: str) -> str:
 
 
 def _score_component(rng: random.Random) -> tuple[float, float]:
-    marker = rng.random()
+    marker = rng.random() * JRRP_SCORE_TOTAL_WEIGHT
     cumulative = 0.0
     for weight, mean, stdev in JRRP_SCORE_COMPONENTS:
         cumulative += weight
@@ -164,8 +165,8 @@ def score_for_seed(seed: str) -> int:
         mean, stdev = _score_component(rng)
         sample = rng.gauss(mean, stdev)
         if 0 <= sample <= 100:
-            return max(0, min(100, round(sample)))
-    return 75
+            return round(sample)
+    return round(JRRP_SCORE_COMPONENTS[0][1])
 
 
 def _matching_level(levels: Any, score: int) -> dict[str, Any] | None:

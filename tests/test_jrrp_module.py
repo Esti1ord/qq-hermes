@@ -1,4 +1,5 @@
 import math
+from collections import Counter
 
 import pytest
 
@@ -96,7 +97,7 @@ def test_score_for_seed_uses_asymmetric_gaussian_mixture_shape():
 
 def test_score_for_seed_distribution_keeps_100_rare_without_clamping_pileup():
     scores = [jrrp.score_for_seed(f"shape:{idx}") for idx in range(20_000)]
-    counts = {score: scores.count(score) for score in range(101)}
+    counts = Counter(scores)
     mode = max(counts, key=counts.get)
 
     assert 70 <= mode <= 80
