@@ -274,6 +274,47 @@ def test_non_at_group_message_can_trigger_proactive_reply(monkeypatch):
     assert "内容：这群今天像集体低电量。" in context
 
 
+def test_proactive_uses_generic_hermes_when_direct_only_knobs_are_set(monkeypatch):
+    bridge = load_bridge_module()
+    configure_proactive(bridge)
+    bridge.PROACTIVE_TRIGGER_THRESHOLD = 1.0
+    bridge.MIN_SECONDS_BETWEEN_REPLIES = 0.0
+    bridge.DIRECT_FAST_MODEL_ALIAS = "direct-fast-test"
+    bridge.DIRECT_STRONG_MODEL_ALIAS = "direct-strong-test"
+    bridge.DIRECT_CHAT_MODEL_PROVIDER = "custom"
+    bridge.DIRECT_CHAT_MODEL_BASE_URL = "configured-direct-base-url"
+    bridge.DIRECT_CHAT_MODEL_API_KEY_ENV = "DIRECT_TEST_KEY"
+    bridge.DIRECT_MODEL_TIMEOUT_SECONDS = 3
+    bridge.DIRECT_MAX_OUTPUT_CHARS = 24
+    sent = []
+    hermes_calls = []
+
+    def fake_run_hermes_raw(prompt, group_id=None, use_group_session=True, purpose="unknown"):
+        hermes_calls.append({"group_id": group_id, "use_group_session": use_group_session, "purpose": purpose})
+        return "这群今天像集体低电量。"
+
+    def fail_direct(*args, **kwargs):
+        raise AssertionError("proactive must not use direct generation")
+
+    async def fake_send(group_id, message):
+        sent.append((group_id, message))
+        return {"ok": True, "status": "ok"}
+
+    monkeypatch.setattr(bridge, "run_hermes_raw", fake_run_hermes_raw)
+    monkeypatch.setattr(bridge, "run_direct_hermes_raw", fail_direct)
+    monkeypatch.setattr(bridge, "send_group_msg", fake_send)
+
+    class FakeRequest:
+        async def json(self):
+            return make_event(text="精神状态不太行")
+
+    result = asyncio.run(run_event_and_drain(bridge, FakeRequest()))
+
+    assert result["queued"] is True
+    assert sent == [(975805598, "这群今天像集体低电量。")]
+    assert hermes_calls == [{"group_id": 975805598, "use_group_session": False, "purpose": "proactive_reply"}]
+
+
 def test_duplicate_onebot_events_do_not_send_duplicate_proactive_replies(monkeypatch):
     bridge = load_bridge_module()
     configure_proactive(bridge)

@@ -175,6 +175,72 @@ def test_direct_image_message_emits_ocr_performance_stats(monkeypatch):
     assert route["ok_count"] == 1
 
 
+def test_direct_ocr_context_can_select_strong_profile_without_leaking_stats(monkeypatch):
+    bridge = load_bridge_module()
+    configure_bridge(bridge)
+    bridge.RUNTIME_STATS_ENABLED = True
+    bridge.PERF_OBS_ENABLED = True
+    bridge.DIRECT_FAST_MODEL_ALIAS = ""
+    bridge.DIRECT_STRONG_MODEL_ALIAS = "strong-direct-test-model"
+    bridge.DIRECT_CHAT_MODEL_PROVIDER = ""
+    bridge.DIRECT_CHAT_MODEL_BASE_URL = ""
+    bridge.DIRECT_CHAT_MODEL_API_KEY_ENV = ""
+    bridge.DIRECT_MODEL_TIMEOUT_SECONDS = 0
+    bridge.DIRECT_MAX_OUTPUT_CHARS = 0
+    stats = []
+    calls = []
+    sent = []
+
+    monkeypatch.setattr(bridge, "runtime_stat", lambda stat, **fields: stats.append({"stat": stat, **fields}))
+
+    def fake_run_direct_hermes_raw(
+        prompt,
+        group_id=None,
+        *,
+        use_group_session=True,
+        purpose="direct_reply",
+        strong=False,
+    ):
+        calls.append({"prompt": prompt, "group_id": group_id, "purpose": purpose, "strong": strong})
+        return "OCR strong reply"
+
+    async def fake_send(group_id, message):
+        sent.append((group_id, message))
+        return {"ok": True}
+
+    monkeypatch.setattr(bridge, "run_direct_hermes_raw", fake_run_direct_hermes_raw)
+    monkeypatch.setattr(bridge, "send_group_msg", fake_send)
+
+    async def run():
+        event = make_image_at_event(message_id=902)
+        event["message"] = [
+            {"type": "at", "data": {"qq": "3975680980", "name": "Esti"}},
+            {"type": "text", "data": {"text": " 看下这段 OCR 上下文"}},
+        ]
+        task = asyncio.create_task(asyncio.sleep(0, result={"media_context": "SECRET_OCR_CONTEXT_123"}))
+        result = await bridge.process_direct_reply_intent(
+            975805598,
+            {"event": event, "user_text": "看下这段 OCR 上下文", "trigger": "at", "ocr_task": task},
+        )
+        await task
+        return result
+
+    result = asyncio.run(run())
+
+    assert result["replied"] is True
+    assert calls[0]["strong"] is True
+    assert sent == [(975805598, "[CQ:reply,id=902]OCR strong reply")]
+    assert "SECRET_OCR_CONTEXT_123" in calls[0]["prompt"]
+    direct_result = next(item for item in stats if item["stat"] == "direct_reply_result")
+    wait_result = next(item for item in stats if item["stat"] == "ocr_direct_prompt_wait")
+    assert direct_result["direct_model_profile"] == "strong"
+    assert direct_result["direct_model_override"] is True
+    assert wait_result["included"] is True
+    rendered_stats = repr(stats)
+    assert "strong-direct-test-model" not in rendered_stats
+    assert "SECRET_OCR_CONTEXT_123" not in rendered_stats
+
+
 def test_ocr_runtime_logs_do_not_leak_text_or_image_urls_when_debug_flags_set(monkeypatch):
     bridge = load_bridge_module()
     configure_bridge(bridge)
