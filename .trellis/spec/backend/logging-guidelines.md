@@ -506,6 +506,7 @@ Runtime/config globals and helper calls:
 ```python
 DIRECT_PROMPT_PROFILE: str  # "fast" | "rich" | "auto"
 DIRECT_PROMPT_TOTAL_BUDGET_CHARS: int
+DIRECT_COALESCE_WINDOW_MS: int
 PERF_OBS_SAMPLE_RATE: float
 PERF_OBS_DETAIL_LEVEL: str  # "basic" | "detailed"
 OCR_DIRECT_PROMPT_WAIT_MS: int
@@ -542,6 +543,7 @@ Environment keys:
 |---|---:|---|
 | `DIRECT_PROMPT_PROFILE` | `fast` | `fast`, `rich`, or `auto`; invalid values normalize to `rich` in prompt-service helpers |
 | `DIRECT_PROMPT_TOTAL_BUDGET_CHARS` | `6500` | Hard total rendered direct prompt budget; non-critical optional sections may shrink to zero, but critical current-message content is preserved |
+| `DIRECT_COALESCE_WINDOW_MS` | `0` | Optional same-sender direct burst coalescing window; `0` disables it and restores one-direct-intent-per-message behavior |
 | `PERF_OBS_SAMPLE_RATE` | implementation default | Probabilistic sampling for safe detailed perf stats; never changes content-safety filtering |
 | `PERF_OBS_DETAIL_LEVEL` | implementation default | `basic` logs timings/counts only; `detailed` may add section chars, truncation flags, queue depths, and config profile labels |
 | `OCR_DIRECT_PROMPT_WAIT_MS` | implementation default | Maximum wait before direct prompt construction proceeds without OCR or takes the controlled image-required slow/notice path |
@@ -554,8 +556,9 @@ Runtime stats and metrics contracts:
   `status`, `component`, `error_type`, and optional `group_id` only when
   `PROMETHEUS_INCLUDE_GROUP_ID_LABEL=true`.
 - Reply-speed histograms/counters may expose durations, chars, queue sizes,
-  section counts, truncation booleans/counts, profile labels, transport phase
-  (`cli_primary`, `http_fallback`, etc.), and safe status enums.
+  section counts, truncation booleans/counts, profile labels, coalesced counts,
+  coalescing window milliseconds, transport phase (`cli_primary`,
+  `http_fallback`, etc.), and safe status enums.
 - `prompt_rendered` and admin prompt composition expose only metadata:
   prompt kind/profile, total budget, total char count, section keys/titles,
   section source/priority, section budget chars, rendered/original char counts,
@@ -565,6 +568,12 @@ Runtime stats and metrics contracts:
   configuration metadata.
 - Admin state may mirror the active direct prompt profile and total budget, but
   only as metadata in `prompt_composition` / compatibility `context_composition`.
+- Direct burst coalescing may merge only not-yet-started direct intents from the
+  same group, same sender, and same safe direct route. It must not merge
+  proactive, commands, different senders/routes, reply-target, media/OCR-dependent,
+  or already-started intents. Merged text may enter only the prompt path;
+  runtime stats and metrics expose only counts, queue sizes, window milliseconds,
+  statuses, and other low-cardinality metadata.
 - Proactive prompt rendering must still contain `<SILENT>` exactly once.
 
 ### 4. Validation & Error Matrix
@@ -580,6 +589,9 @@ Runtime stats and metrics contracts:
 | Runtime stat contains `prompt_profile`, prompt budget, prompt chars, truncation fields | Sanitizer keeps these safe metadata fields |
 | Metrics observation receives unsafe labels/values, URLs, secrets, or high-cardinality fields | Label filtering/sanitization omits or normalizes them; message processing continues |
 | `PROMETHEUS_INCLUDE_GROUP_ID_LABEL=false` | No metric line contains `group_id` |
+| `DIRECT_COALESCE_WINDOW_MS=0` | Direct intents stay separate and queue behavior is legacy-compatible |
+| Safe same-sender direct text arrives within `DIRECT_COALESCE_WINDOW_MS` | Pending tail direct intent may merge; prompt sees ordered merged text and reply targets the latest message |
+| Direct coalescing sees reply/media/OCR/command/proactive/different sender or route | Do not merge; process as separate intent or route |
 | OCR misses `OCR_DIRECT_PROMPT_WAIT_MS` | Direct prompt path records a safe timeout/wait status and proceeds without logging OCR text or image URL |
 | Proactive is cancelled, stale, direct-pending, or revalidated low | Metrics use bounded skip statuses such as `direct_pending`, `stale`, or `skipped` |
 | OneBot send fails | Metrics/logs expose only safe status code/status enum or exception type; no response body dump |
@@ -590,6 +602,9 @@ Runtime stats and metrics contracts:
 - Good: `/admin/state` shows direct prompt section metadata and `direct_profile="fast"`, but serialized JSON has no `body`, raw section text, chat snippets, or prompt.
 - Good: `ocr_direct_prompt_wait` records `status="timeout"`, `wait_ms`, and
   `timeout_ms` when OCR misses the direct deadline.
+- Good: `queue_event` for a direct burst coalescing hit records
+  `coalesced=true`, `kind="direct"`, `merged_count`, `coalesced_count`, queue
+  sizes, and `coalesce_window_ms`, but no merged message text.
 - Base: `PROMETHEUS_INCLUDE_GROUP_ID_LABEL=true` may include safe numeric group IDs;
   default output omits them.
 - Bad: Exporting `profile` with a user's raw profile text, prompt section bodies,
@@ -607,13 +622,17 @@ Runtime stats and metrics contracts:
 - `tests/test_runtime_stats_module.py` must assert generic `profile` is dropped while
   explicit safe prompt metadata such as `prompt_profile`, budget, chars, and
   truncation fields survives.
-- `tests/test_metrics_module.py` must assert new reply-speed metrics/histograms and
-  label safety, including default omission of `group_id`.
+- `tests/test_metrics_module.py` must assert new reply-speed metrics/histograms,
+  direct coalescing queue-event metrics, and label safety, including default
+  omission of `group_id`.
 - `tests/test_admin_routes.py` must assert admin prompt composition exposes active
   direct profile/total budget as metadata only and contains no prompt/message text.
+- `tests/test_reply_queue_module.py` must assert safe direct coalescing and no
+  coalescing across proactive, command, reply-target, media/OCR, different
+  sender/route, started-item, or window-expired boundaries.
 - `tests/test_direct_reply_inflight.py`, `tests/test_proactive_speaking.py`, and
-  `tests/test_bridge_ocr.py` must cover direct-over-proactive behavior and OCR
-  direct wait deadlines.
+  `tests/test_bridge_ocr.py` must cover direct-over-proactive behavior, runtime
+  direct coalescing integration, and OCR direct wait deadlines.
 - Runtime validation:
   ```bash
   ./venv/bin/python -m py_compile bridge.py qq_hermes_bridge/*.py
