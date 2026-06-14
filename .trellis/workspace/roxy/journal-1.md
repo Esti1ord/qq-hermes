@@ -84,7 +84,7 @@ Removed safe generated Python and pytest cache directories while preserving runt
 
 ### Summary
 
-Implemented and verified reply-speed improvements: content-safe latency metrics/stats, direct prompt fast profile and total budget metadata, proactive/direct scheduling safeguards, OCR direct wait metrics, config/spec coverage, and full regression passing.
+Implemented and verified reply-speed improvements: content-safe latency metrics/stats, direct prompt fast profile and total budget metadata, proactive/direct scheduling safeguards, OCR direct wait metrics, config/spec coverage, plus clean-checkout context-command test isolation.
 
 ### Main Changes
 
@@ -95,6 +95,7 @@ Implemented and verified reply-speed improvements: content-safe latency metrics/
 | Hash | Message |
 |------|---------|
 | `72170df` | (see git log) |
+| `3981c53` | (see git log) |
 
 ### Testing
 
