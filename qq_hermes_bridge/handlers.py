@@ -105,6 +105,9 @@ def direct_action_for_event(
     enqueue_reply_intent_fn: Callable[[int, dict[str, Any]], dict[str, Any]],
     log_fn: Callable[[dict[str, Any]], None],
     media_context: str = "",
+    ocr_task: Any = None,
+    base_context_text: str = "",
+    message_identity: dict[str, str] | None = None,
     is_name_mention_fn: Callable[[dict[str, Any]], bool] = lambda event: False,
 ) -> dict[str, Any]:
     if skip_unclear_mentions and should_skip_unclear_mention_fn(user_text):
@@ -118,7 +121,19 @@ def direct_action_for_event(
     if group_id is None:
         return {"ok": True, "ignored": "no_group_id"}
     trigger = direct_trigger_name(is_reply_to_bot=is_reply_to_me_fn(event), is_at_bot=is_at_me_fn(event), is_name_mention=is_name_mention_fn(event))
-    queued = enqueue_reply_intent_fn(group_id, {"kind": "direct", "event": event, "user_text": user_text, "trigger": trigger, "media_context": media_context})
+    queued = enqueue_reply_intent_fn(
+        group_id,
+        {
+            "kind": "direct",
+            "event": event,
+            "user_text": user_text,
+            "trigger": trigger,
+            "media_context": media_context,
+            "ocr_task": ocr_task,
+            "base_context_text": base_context_text,
+            "message_identity": message_identity or {},
+        },
+    )
     if not queued.get("queued"):
         log_fn({
             "type": "ignored",

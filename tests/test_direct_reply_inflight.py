@@ -33,7 +33,22 @@ def configure_bridge(bridge):
     bridge.MIN_SECONDS_BETWEEN_REPLIES = 0.0
     bridge.USER_COOLDOWN_SECONDS = 0.0
     bridge.MAX_PENDING_DIRECT_REPLIES = 20
+    bridge.DIRECT_COALESCE_WINDOW_MS = 0
+    bridge.DIRECT_FAST_MODEL_ALIAS = ""
+    bridge.DIRECT_STRONG_MODEL_ALIAS = ""
+    bridge.DIRECT_CHAT_MODEL_PROVIDER = ""
+    bridge.DIRECT_CHAT_MODEL_BASE_URL = ""
+    bridge.DIRECT_CHAT_MODEL_API_KEY_ENV = ""
+    bridge.DIRECT_MODEL_TIMEOUT_SECONDS = 0
+    bridge.DIRECT_MAX_OUTPUT_CHARS = 0
+    bridge.PROACTIVE_TRIGGER_THRESHOLD = 70.0
+    bridge.PROACTIVE_TRIGGER_THRESHOLDS_BY_GROUP = {}
+    bridge.PROACTIVE_GROUP_COOLDOWN_SECONDS = 900.0
     bridge.PROACTIVE_RATE_LIMIT_MAX_REPLIES = 6
+    bridge._proactive_state_by_group.clear()
+    bridge._recent_activity_by_group.clear()
+    if hasattr(bridge, "_proactive_reply_times_by_group"):
+        bridge._proactive_reply_times_by_group.clear()
     bridge._recent_messages_by_group.clear()
     bridge._last_user_reply_at.clear()
     bridge._recent_messages.clear()
@@ -134,6 +149,7 @@ def test_same_user_burst_is_queued_while_direct_worker_active(monkeypatch):
     assert sent == [(975805598, "[CQ:reply,id=801]第一个回答"), (975805598, "[CQ:reply,id=802]第二个回答")]
 
 
+
 def test_same_user_sequential_direct_questions_are_not_cooldown_suppressed(monkeypatch):
     bridge = load_bridge_module()
     configure_bridge(bridge)
@@ -166,6 +182,90 @@ def test_same_user_sequential_direct_questions_are_not_cooldown_suppressed(monke
     assert second["queued"] is True
     assert len(calls) == 2
     assert sent == [(975805598, "[CQ:reply,id=9011]第一次回答"), (975805598, "[CQ:reply,id=9012]第二次回答")]
+
+
+def test_same_user_direct_burst_can_coalesce_into_one_prompt_and_reply_latest_message(monkeypatch):
+    bridge = load_bridge_module()
+    configure_bridge(bridge)
+    bridge.DIRECT_COALESCE_WINDOW_MS = 100
+    bridge.RUNTIME_STATS_ENABLED = True
+    bridge.PERF_OBS_ENABLED = True
+    prompts = []
+    sent = []
+    stats = []
+
+    def fake_run_hermes_raw(prompt, group_id=None, use_group_session=True, purpose="unknown"):
+        prompts.append(prompt)
+        return "合并回答"
+
+    async def fake_send(group_id, message):
+        sent.append((group_id, message))
+        return {"ok": True}
+
+    monkeypatch.setattr(bridge, "run_hermes_raw", fake_run_hermes_raw)
+    monkeypatch.setattr(bridge, "send_group_msg", fake_send)
+    monkeypatch.setattr(bridge, "runtime_stat", lambda stat, **fields: stats.append({"stat": stat, **fields}))
+
+    async def run_two():
+        first = await bridge.onebot_event(FakeRequest(make_at_event(text="Esti 第一条 SECRET_A", user_id=1, message_id=7101)))
+        second = await bridge.onebot_event(FakeRequest(make_at_event(text="Esti 第二条 SECRET_B", user_id=1, message_id=7102)))
+        await bridge.wait_reply_worker(975805598)
+        return first, second
+
+    first, second = asyncio.run(run_two())
+
+    assert first["queued"] is True
+    assert second["queued"] is True
+    assert len(prompts) == 1
+    assert "同一位群友在短时间内连续发了几条消息" in prompts[0]
+    assert prompts[0].index("SECRET_A") < prompts[0].index("SECRET_B")
+    assert sent == [(975805598, "[CQ:reply,id=7102]合并回答")]
+    queue_events = [item for item in stats if item["stat"] == "queue_event"]
+    assert any(item.get("coalesced") is True and item.get("coalesced_count") == 2 for item in queue_events)
+    direct_results = [item for item in stats if item["stat"] == "direct_reply_result"]
+    assert direct_results[-1]["coalesced_count"] == 2
+    rendered_stats = repr(stats)
+    assert "SECRET_A" not in rendered_stats
+    assert "SECRET_B" not in rendered_stats
+
+
+def test_same_user_direct_burst_does_not_coalesce_reply_or_media_messages(monkeypatch):
+    bridge = load_bridge_module()
+    configure_bridge(bridge)
+    bridge.DIRECT_COALESCE_WINDOW_MS = 100
+    prompts = []
+    sent = []
+    outputs = iter(["第一答", "第二答"])
+
+    def fake_run_hermes_raw(prompt, group_id=None, use_group_session=True, purpose="unknown"):
+        prompts.append(prompt)
+        return next(outputs)
+
+    async def fake_send(group_id, message):
+        sent.append((group_id, message))
+        return {"ok": True}
+
+    monkeypatch.setattr(bridge, "run_hermes_raw", fake_run_hermes_raw)
+    monkeypatch.setattr(bridge, "send_group_msg", fake_send)
+
+    reply_event = make_at_event(text="Esti 第二条", user_id=1, message_id=7202)
+    reply_event["message"] = [
+        {"type": "reply", "data": {"id": "7200"}},
+        {"type": "text", "data": {"text": "Esti 第二条"}},
+    ]
+
+    async def run_two():
+        first = await bridge.onebot_event(FakeRequest(make_at_event(text="Esti 第一条", user_id=1, message_id=7201)))
+        second = await bridge.onebot_event(FakeRequest(reply_event))
+        await bridge.wait_reply_worker(975805598)
+        return first, second
+
+    first, second = asyncio.run(run_two())
+
+    assert first["queued"] is True
+    assert second["queued"] is True
+    assert len(prompts) == 2
+    assert sent == [(975805598, "[CQ:reply,id=7201]第一答"), (975805598, "[CQ:reply,id=7202]第二答")]
 
 
 def test_process_direct_reply_intent_can_run_without_queue_wrapper(monkeypatch):
@@ -381,6 +481,7 @@ def test_direct_priority_drains_before_proactive_backlog(monkeypatch):
     configure_bridge(bridge)
     sent = []
 
+    bridge.PROACTIVE_TRIGGER_THRESHOLD = 0.0
     monkeypatch.setattr(bridge, "run_hermes_raw", lambda *args, **kwargs: "直接回答")
     monkeypatch.setattr(bridge, "run_proactive_reply", lambda event, reasons: f"主动回答 {event.get('user_id')}")
 
@@ -396,6 +497,57 @@ def test_direct_priority_drains_before_proactive_backlog(monkeypatch):
     asyncio.run(bridge.process_reply_intent(975805598, {"kind": "proactive"}))
 
     assert sent == [(975805598, "[CQ:reply,id=11]直接回答"), (975805598, "主动回答 10")]
+
+
+
+
+def test_proactive_generation_skips_when_direct_is_pending(monkeypatch):
+    bridge = load_bridge_module()
+    configure_bridge(bridge)
+    calls = []
+
+    monkeypatch.setattr(bridge, "run_proactive_reply", lambda event, reasons: calls.append((event, reasons)) or "不该生成")
+    bridge.enqueue_reply_intent(
+        975805598,
+        {"kind": "direct", "event": make_at_event(user_id=1, message_id=7101), "user_text": "Esti 直接问题", "trigger": "at"},
+    )
+    proactive_event = make_at_event(text="普通热闹话题", user_id=2, message_id=7102)
+
+    result = asyncio.run(
+        bridge.process_proactive_reply_intent(
+            975805598,
+            {"kind": "proactive", "event": proactive_event, "proactive": {"should_trigger": True, "score": 99, "reasons": ["hot"]}},
+        )
+    )
+
+    assert result["ignored"] == "direct_pending"
+    assert calls == []
+
+
+def test_proactive_generation_skips_stale_queue_item(monkeypatch):
+    bridge = load_bridge_module()
+    configure_bridge(bridge)
+    bridge.PROACTIVE_QUEUE_MAX_AGE_SECONDS = 10.0
+    calls = []
+
+    monkeypatch.setattr(bridge, "run_proactive_reply", lambda event, reasons: calls.append((event, reasons)) or "不该生成")
+    now = bridge.runtime_now()
+    event = make_at_event(text="旧主动话题", user_id=3, message_id=7103)
+
+    result = asyncio.run(
+        bridge.process_proactive_reply_intent(
+            975805598,
+            {
+                "kind": "proactive",
+                "event": event,
+                "proactive": {"should_trigger": True, "score": 99, "reasons": ["hot"]},
+                "_perf_enqueued_at": now - 11.0,
+            },
+        )
+    )
+
+    assert result["ignored"] == "stale"
+    assert calls == []
 
 
 def test_send_group_msg_rate_limited_serializes_concurrent_sends(monkeypatch):
@@ -456,6 +608,68 @@ def test_send_group_msg_exception_log_does_not_include_url_token_or_message(monk
     assert "private message" not in rendered
 
 
+
+
+def test_direct_strong_model_profile_applies_to_reply_to_bot_and_media_only(monkeypatch):
+    bridge = load_bridge_module()
+    configure_bridge(bridge)
+    bridge.RUNTIME_STATS_ENABLED = True
+    bridge.PERF_OBS_ENABLED = True
+    bridge.DIRECT_STRONG_MODEL_ALIAS = "secret-strong-direct-model"
+    calls = []
+    stats = []
+    sent = []
+
+    def fake_run_direct(prompt, group_id=None, use_group_session=True, purpose="unknown", strong=False):
+        calls.append({"group_id": group_id, "purpose": purpose, "use_group_session": use_group_session, "strong": strong})
+        return f"回答{len(calls)}"
+
+    async def fake_send(group_id, message):
+        sent.append((group_id, message))
+        return {"ok": True}
+
+    monkeypatch.setattr(bridge, "runtime_stat", lambda stat, **fields: stats.append({"stat": stat, **fields}))
+    monkeypatch.setattr(bridge, "run_direct_hermes_raw", fake_run_direct)
+    monkeypatch.setattr(bridge, "send_group_msg", fake_send)
+
+    standard_event = make_at_event(text="Esti 普通直接问题", user_id=1, message_id=610)
+    reply_event = make_at_event(text="回复机器人", user_id=2, message_id=611)
+    reply_event["message"] = [
+        {"type": "reply", "data": {"qq": str(reply_event["self_id"]), "id": "previous-bot-message"}},
+        {"type": "at", "data": {"qq": str(reply_event["self_id"])}},
+        {"type": "text", "data": {"text": "回复机器人"}},
+    ]
+    media_event = make_at_event(text="Esti 看图", user_id=3, message_id=612)
+    media_event["message"].append({"type": "image", "data": {"file": "opaque-file-id", "url": "https://image-secret.example/pic.png"}})
+
+    async def run_three():
+        await bridge.process_direct_reply_intent(975805598, {"kind": "direct", "event": standard_event, "user_text": "Esti 普通直接问题", "trigger": "at"})
+        await bridge.process_direct_reply_intent(975805598, {"kind": "direct", "event": reply_event, "user_text": "回复机器人", "trigger": "at"})
+        await bridge.process_direct_reply_intent(
+            975805598,
+            {
+                "kind": "direct",
+                "event": media_event,
+                "user_text": "Esti 看图",
+                "trigger": "at",
+                "media_context": "（当前消息没有图片识别结果）",
+            },
+        )
+
+    asyncio.run(run_three())
+
+    assert [call["strong"] for call in calls] == [False, True, True]
+    assert sent == [
+        (975805598, "[CQ:reply,id=610]回答1"),
+        (975805598, "[CQ:reply,id=611]回答2"),
+        (975805598, "[CQ:reply,id=612]回答3"),
+    ]
+    direct_results = [item for item in stats if item["stat"] == "direct_reply_result"]
+    assert [item["direct_model_profile"] for item in direct_results] == ["standard", "strong", "strong"]
+    assert [item["direct_model_override"] for item in direct_results] == [False, True, True]
+    rendered_stats = repr(direct_results)
+    assert "secret-strong-direct-model" not in rendered_stats
+    assert "image-secret.example" not in rendered_stats
 
 
 def test_direct_reply_emits_content_safe_performance_stats(monkeypatch):

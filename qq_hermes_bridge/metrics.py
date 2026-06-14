@@ -313,14 +313,43 @@ def observe_runtime_stat(stat: str, fields: dict[str, Any]) -> None:
                 "End-to-end reply latency in seconds.",
                 _milliseconds_to_seconds(duration_ms),
                 type=reply_type,
+                status=status,
+            )
+        queue_wait_ms = safe_fields.get("queue_wait_ms")
+        if queue_wait_ms not in (None, ""):
+            _registry.histogram(
+                "queue_wait_seconds",
+                "Reply queue wait latency in seconds.",
+                _milliseconds_to_seconds(queue_wait_ms),
+                type=reply_type,
+            )
+        _observe_reply_stage(reply_type, status, "prompt_build", safe_fields.get("prompt_build_ms"))
+        _observe_reply_stage(reply_type, status, "generation", safe_fields.get("generation_ms"))
+        if reply_type == "proactive" and status not in {"ok", "sent"}:
+            _registry.counter(
+                "proactive_skips_total",
+                "Proactive replies skipped or cancelled by status.",
+                1,
+                status=status,
+            )
+        if reply_type == "direct" and status == "duplicate_suppressed":
+            _registry.counter(
+                "direct_coalesced_total",
+                "Direct replies suppressed by duplicate outbound coalescing.",
+                1,
+                status=status,
             )
         return
 
     if stat_name == "hermes_call":
+        hermes_type = _hermes_call_type(safe_fields)
+        status = _operation_status(safe_fields)
         _registry.histogram(
             "hermes_call_duration_seconds",
-            "Hermes CLI call duration in seconds.",
+            "Hermes text generation call duration in seconds.",
             _milliseconds_to_seconds(safe_fields.get("duration_ms")),
+            type=hermes_type,
+            status=status,
         )
         if safe_fields.get("ok") is False:
             _registry.counter(
@@ -332,12 +361,31 @@ def observe_runtime_stat(stat: str, fields: dict[str, Any]) -> None:
             )
         return
 
+    if stat_name == "prompt_rendered":
+        prompt_type = _sanitize_label_value(safe_fields.get("kind") or safe_fields.get("type") or "unknown")
+        _registry.histogram(
+            "prompt_chars",
+            "Rendered prompt size in characters.",
+            _float_value(safe_fields.get("char_count")),
+            buckets=(100, 250, 500, 1000, 2000, 4000, 8000, 16000),
+            type=prompt_type,
+        )
+        _registry.histogram(
+            "prompt_truncated_sections",
+            "Rendered prompt truncated section count.",
+            _float_value(safe_fields.get("truncated_count")),
+            buckets=(0, 1, 2, 3, 5, 8, 13),
+            type=prompt_type,
+        )
+        return
+
     if stat_name in {"ocr_fetch_result", "ocr_provider_result", "ocr_route_result"}:
         status = _ocr_status(stat_name, safe_fields)
         _registry.histogram(
             "ocr_duration_seconds",
             "OCR and image-processing duration in seconds.",
             _milliseconds_to_seconds(safe_fields.get("duration_ms")),
+            type=_ocr_type(stat_name, safe_fields),
             status=status,
         )
         if safe_fields.get("ok") is False or int(float(safe_fields.get("error_count") or 0)) > 0:
@@ -348,6 +396,58 @@ def observe_runtime_stat(stat: str, fields: dict[str, Any]) -> None:
                 component="ocr",
                 error_type=_sanitize_label_value(safe_fields.get("error") or status),
             )
+        return
+
+    if stat_name == "send_group_msg_rate_limited":
+        status = _send_status(safe_fields)
+        _registry.counter(
+            "sends_total",
+            "Outbound OneBot send attempts and suppressed duplicates by status.",
+            1,
+            status=status,
+        )
+        _registry.histogram(
+            "send_duration_seconds",
+            "Outbound OneBot send path duration in seconds.",
+            _milliseconds_to_seconds(safe_fields.get("duration_ms")),
+            status=status,
+        )
+        _registry.histogram(
+            "send_rate_limit_wait_seconds",
+            "Time spent waiting for the global send rate limit in seconds.",
+            _milliseconds_to_seconds(safe_fields.get("rate_limit_wait_ms")),
+            status=status,
+        )
+        if safe_fields.get("ok") is False:
+            _registry.counter(
+                "errors_total",
+                "Errors observed by bridge component.",
+                1,
+                component="onebot",
+                error_type=_sanitize_label_value(safe_fields.get("onebot_status") or safe_fields.get("status_code") or "send_failed"),
+            )
+        return
+
+    if stat_name == "ocr_direct_prompt_wait":
+        status = _sanitize_label_value(safe_fields.get("status") or "unknown")
+        _registry.counter(
+            "ocr_direct_prompt_waits_total",
+            "Direct prompt OCR wait outcomes by status.",
+            1,
+            status=status,
+        )
+        _registry.histogram(
+            "ocr_direct_prompt_wait_seconds",
+            "Time direct prompt construction waited for OCR in seconds.",
+            _milliseconds_to_seconds(safe_fields.get("wait_ms")),
+            status=status,
+        )
+        _registry.histogram(
+            "ocr_direct_prompt_timeout_seconds",
+            "Configured direct prompt OCR wait deadline in seconds.",
+            _milliseconds_to_seconds(safe_fields.get("timeout_ms")),
+            status=status,
+        )
         return
 
     if stat_name == "send_group_msg" and safe_fields.get("ok") is False:
@@ -362,6 +462,19 @@ def observe_runtime_stat(stat: str, fields: dict[str, Any]) -> None:
 
     if stat_name == "queue_event":
         _set_queue_gauges_from_fields(safe_fields)
+        if safe_fields.get("coalesced"):
+            try:
+                merged_count = max(1.0, float(safe_fields.get("merged_count") or 1))
+            except (TypeError, ValueError):
+                merged_count = 1.0
+            _registry.counter(
+                "queue_events_total",
+                "Reply queue events by type and status.",
+                merged_count,
+                type=_sanitize_label_value(safe_fields.get("kind") or "direct"),
+                status="coalesced",
+                group_id=safe_fields.get("group_id"),
+            )
         if not safe_fields.get("queued", True):
             _registry.counter(
                 "errors_total",
@@ -448,10 +561,79 @@ def _reply_status(stat_name: str, fields: dict[str, Any]) -> str:
     if fields.get("replied") or fields.get("sent") or fields.get("proactive_replied"):
         return "sent"
     if fields.get("skipped") or fields.get("ignored"):
-        return "skipped"
+        return _skip_status(fields)
     if fields.get("ok") is False:
         return "error"
     return "ok"
+
+
+def _skip_status(fields: dict[str, Any]) -> str:
+    reason = _sanitize_label_value(fields.get("ignored") or fields.get("reason") or fields.get("blocked") or "skipped")
+    known = {
+        "direct_pending",
+        "stale",
+        "proactive_model_skipped",
+        "proactive_revalidated_blocked",
+        "proactive_revalidated_score_low",
+        "duplicate_suppressed",
+        "skipped",
+    }
+    return reason if reason in known else "skipped"
+
+
+def _hermes_call_type(fields: dict[str, Any]) -> str:
+    transport = _sanitize_label_value(fields.get("transport") or "cli")
+    phase = _sanitize_label_value(fields.get("phase") or ("fallback" if "fallback" in str(fields.get("purpose") or "").lower() else "primary"))
+    if phase not in {"primary", "fallback"}:
+        phase = "primary"
+    return _sanitize_label_value(f"{transport}_{phase}")
+
+
+def _observe_reply_stage(reply_type: str, status: str, component: str, duration_ms: Any) -> None:
+    if duration_ms in (None, ""):
+        return
+    _registry.histogram(
+        "reply_stage_duration_seconds",
+        "Reply pipeline stage duration in seconds.",
+        _milliseconds_to_seconds(duration_ms),
+        type=reply_type,
+        status=status,
+        component=component,
+    )
+
+
+def _send_status(fields: dict[str, Any]) -> str:
+    if fields.get("suppressed_duplicate"):
+        return "duplicate_suppressed"
+    if fields.get("ok") is True:
+        return "ok"
+    if fields.get("ok") is False:
+        return "error"
+    return "unknown"
+
+
+def _operation_status(fields: dict[str, Any]) -> str:
+    if fields.get("ok") is True:
+        return "ok"
+    if fields.get("ok") is False:
+        error = _sanitize_label_value(fields.get("error") or fields.get("reason") or "error")
+        if error in {"timeout", "timeoutexpired"}:
+            return "timeout"
+        if error in {"hermes_empty_output", "malformed_response"}:
+            return "empty"
+        return "error"
+    return "unknown"
+
+
+def _ocr_type(stat_name: str, fields: dict[str, Any]) -> str:
+    if stat_name == "ocr_route_result":
+        route = _sanitize_label_value(fields.get("route") or "unknown")
+        return _sanitize_label_value(f"route_{route}")
+    if stat_name == "ocr_fetch_result":
+        return "fetch"
+    if stat_name == "ocr_provider_result":
+        return "provider"
+    return "unknown"
 
 
 def _ocr_status(stat_name: str, fields: dict[str, Any]) -> str:
@@ -464,8 +646,12 @@ def _ocr_status(stat_name: str, fields: dict[str, Any]) -> str:
     return _sanitize_label_value(fields.get("status") or ("ok" if fields.get("ok", True) else "error"))
 
 
-def _milliseconds_to_seconds(value: Any) -> float:
+def _float_value(value: Any) -> float:
     try:
-        return max(0.0, float(value or 0.0) / 1000.0)
+        return max(0.0, float(value or 0.0))
     except Exception:
         return 0.0
+
+
+def _milliseconds_to_seconds(value: Any) -> float:
+    return _float_value(value) / 1000.0

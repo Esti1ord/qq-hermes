@@ -62,6 +62,76 @@ def test_load_config_includes_prometheus_flags(tmp_path, monkeypatch):
     assert loaded.prometheus_include_group_id_label is True
 
 
+def test_load_config_includes_reply_speed_knob_defaults_and_overrides(tmp_path, monkeypatch):
+    monkeypatch.setenv("GROUP_IDS", "975805598")
+    for name in (
+        "DIRECT_PROMPT_PROFILE",
+        "DIRECT_PROMPT_TOTAL_BUDGET_CHARS",
+        "OCR_DIRECT_PROMPT_WAIT_MS",
+        "PROACTIVE_QUEUE_MAX_AGE_SECONDS",
+        "DIRECT_COALESCE_WINDOW_MS",
+        "DIRECT_FAST_MODEL_ALIAS",
+        "DIRECT_STRONG_MODEL_ALIAS",
+        "DIRECT_CHAT_MODEL_PROVIDER",
+        "DIRECT_CHAT_MODEL_URL",
+        "DIRECT_CHAT_MODEL_BASE_URL",
+        "DIRECT_CHAT_MODEL_API_KEY_ENV",
+        "DIRECT_CHAT_MODEL_API_KEY",
+        "DIRECT_CHAT_MODEL_API",
+        "DIRECT_MODEL_TIMEOUT_SECONDS",
+        "DIRECT_MAX_OUTPUT_CHARS",
+    ):
+        monkeypatch.delenv(name, raising=False)
+
+    loaded = bridge_config.load_config(tmp_path)
+
+    assert loaded.direct_prompt_profile == "fast"
+    assert loaded.direct_prompt_total_budget_chars == 6500
+    assert loaded.ocr_direct_prompt_wait_ms == 1200
+    assert loaded.proactive_queue_max_age_seconds == 45
+    assert loaded.direct_coalesce_window_ms == 0
+    assert loaded.direct_fast_model_alias == ""
+    assert loaded.direct_strong_model_alias == ""
+    assert loaded.direct_chat_model_provider == ""
+    assert loaded.direct_chat_model_base_url == ""
+    assert loaded.direct_chat_model_api_key_env == ""
+    assert loaded.direct_model_timeout_seconds == 0
+    assert loaded.direct_max_output_chars == 0
+
+    monkeypatch.setenv("DIRECT_PROMPT_PROFILE", "auto")
+    monkeypatch.setenv("DIRECT_PROMPT_TOTAL_BUDGET_CHARS", "4321")
+    monkeypatch.setenv("OCR_DIRECT_PROMPT_WAIT_MS", "0")
+    monkeypatch.setenv("PROACTIVE_QUEUE_MAX_AGE_SECONDS", "12.5")
+    monkeypatch.setenv("DIRECT_COALESCE_WINDOW_MS", "250")
+    monkeypatch.setenv("DIRECT_FAST_MODEL_ALIAS", "fast-direct")
+    monkeypatch.setenv("DIRECT_STRONG_MODEL_ALIAS", "strong-direct")
+    monkeypatch.setenv("DIRECT_CHAT_MODEL_PROVIDER", "custom")
+    monkeypatch.setenv("DIRECT_CHAT_MODEL_BASE_URL", "https://direct-chat.example.test/v1")
+    monkeypatch.setenv("DIRECT_CHAT_MODEL_API", "dummy-direct-chat-key")
+    monkeypatch.setenv("DIRECT_MODEL_TIMEOUT_SECONDS", "7")
+    monkeypatch.setenv("DIRECT_MAX_OUTPUT_CHARS", "123")
+
+    loaded = bridge_config.load_config(tmp_path)
+
+    assert loaded.direct_prompt_profile == "auto"
+    assert loaded.direct_prompt_total_budget_chars == 4321
+    assert loaded.ocr_direct_prompt_wait_ms == 0
+    assert loaded.proactive_queue_max_age_seconds == 12.5
+    assert loaded.direct_coalesce_window_ms == 250
+    assert loaded.direct_fast_model_alias == "fast-direct"
+    assert loaded.direct_strong_model_alias == "strong-direct"
+    assert loaded.direct_chat_model_provider == "custom"
+    assert loaded.direct_chat_model_base_url == "https://direct-chat.example.test/v1"
+    assert loaded.direct_chat_model_api_key_env == "DIRECT_CHAT_MODEL_API"
+    assert loaded.direct_model_timeout_seconds == 7
+    assert loaded.direct_max_output_chars == 123
+
+    monkeypatch.setenv("DIRECT_PROMPT_PROFILE", "unsafe")
+    loaded = bridge_config.load_config(tmp_path)
+
+    assert loaded.direct_prompt_profile == "rich"
+
+
 def test_load_config_disables_punctuation_style_by_default(tmp_path, monkeypatch):
     monkeypatch.setenv("GROUP_IDS", "975805598")
     monkeypatch.delenv("PUNCTUATION_STYLE_ENABLED", raising=False)

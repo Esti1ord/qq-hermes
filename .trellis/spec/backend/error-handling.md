@@ -70,6 +70,13 @@ OCR_FALLBACK_MODEL: str
 OCR_FALLBACK_PROVIDER_BASE_URL: str
 OCR_FALLBACK_API_KEY_ENV: str
 OCR_EXTERNAL_PROVIDER_ALLOWED: bool
+DIRECT_FAST_MODEL_ALIAS: str
+DIRECT_STRONG_MODEL_ALIAS: str
+DIRECT_CHAT_MODEL_PROVIDER: str
+DIRECT_CHAT_MODEL_BASE_URL: str
+DIRECT_CHAT_MODEL_API_KEY_ENV: str
+DIRECT_MODEL_TIMEOUT_SECONDS: int
+DIRECT_MAX_OUTPUT_CHARS: int
 DIRECT_GENERATION_FAILURE_NOTICE: str
 ```
 
@@ -88,6 +95,9 @@ def text_model_http_config(
     api_key_env: str,
 ) -> dict[str, str] | None: ...
 def primary_text_http_config_for_group(group_id: int | None = None) -> dict[str, str] | None: ...
+def direct_text_http_config_for_group(group_id: int | None = None, *, strong: bool = False) -> dict[str, str] | None: ...
+def direct_model_for_group(group_id: int | None, *, strong: bool = False) -> str: ...
+def direct_profile_for_intent(intent: dict[str, Any], *, media_context: Any = None) -> str: ...
 def fallback_text_http_config() -> dict[str, str] | None: ...
 def run_text_http_result(
     prompt: str,
@@ -96,20 +106,45 @@ def run_text_http_result(
     group_id: int | None = None,
     purpose: str = "unknown",
     phase: str = "primary",
+    timeout_s: int | None = None,
+    max_reply_chars: int | None = None,
 ) -> dict[str, Any]: ...
-def hermes_fallback_available(group_id: int | None = None) -> bool: ...
+def hermes_fallback_available(
+    group_id: int | None = None,
+    *,
+    active_model: str | None = None,
+    active_provider: str | None = None,
+    active_base_url: str | None = None,
+    active_api_key_env: str | None = None,
+) -> bool: ...
 def run_hermes_fallback_result(
     prompt: str,
     group_id: int | None = None,
     *,
     purpose: str = "unknown",
     primary_reason: str = "",
+    active_model: str | None = None,
+    active_provider: str | None = None,
+    active_base_url: str | None = None,
+    active_api_key_env: str | None = None,
+    timeout_s: int | None = None,
+    max_reply_chars: int | None = None,
 ) -> dict[str, Any] | None: ...
-def run_hermes_raw_result(
+def run_direct_hermes_raw(
     prompt: str,
     group_id: int | None = None,
+    *,
     use_group_session: bool = True,
-    purpose: str = "unknown",
+    purpose: str = "direct_reply",
+    strong: bool = False,
+) -> str: ...
+def run_direct_hermes_raw_result(
+    prompt: str,
+    group_id: int | None = None,
+    *,
+    use_group_session: bool = True,
+    purpose: str = "direct_reply",
+    strong: bool = False,
 ) -> dict[str, Any]: ...
 def build_ocr_provider() -> vision.VisionProvider: ...
 def build_ocr_fallback_provider() -> vision.VisionProvider: ...
@@ -141,7 +176,12 @@ Text generation env precedence:
 | Fallback text URL | `VICE_CHAT_MODEL_URL` → `VICE_CHAT_MODEL_BASE_URL` → `HERMES_FALLBACK_PROVIDER_BASE_URL` | Enables OpenAI-compatible fallback HTTP for supported providers; never log it |
 | Fallback text API key env name | explicit `VICE_CHAT_MODEL_API_KEY_ENV` → `HERMES_FALLBACK_API_KEY_ENV`, else raw-name detection on `VICE_CHAT_MODEL_API_KEY` / `VICE_CHAT_MODEL_API` / `HERMES_FALLBACK_API_KEY` | Pass the env var name into the HTTP helper; do not copy or log the secret value |
 | Per-group model override | `HERMES_MODEL_BY_GROUP[group_id]` | Overrides the primary text model for that group only |
-| Per-group provider override | `HERMES_PROVIDER_BY_GROUP[group_id]` | Overrides the primary text provider for that group only |
+| Direct fast model alias | `DIRECT_FAST_MODEL_ALIAS` → empty | Optional model override for direct replies only; empty keeps normal primary/group model routing |
+| Direct strong model alias | `DIRECT_STRONG_MODEL_ALIAS` → empty | Optional model-only override for strong direct replies: reply-to-bot and media/OCR-dependent direct intents; empty keeps normal direct routing unchanged |
+| Direct text provider | `DIRECT_CHAT_MODEL_PROVIDER` → primary/group provider | Optional direct-only provider override; empty inherits normal primary/group provider |
+| Direct text URL | `DIRECT_CHAT_MODEL_URL` → `DIRECT_CHAT_MODEL_BASE_URL` → empty | Enables direct-only OpenAI-compatible HTTP only with supported provider and API-key env name; never log it |
+| Direct text API key env name | explicit `DIRECT_CHAT_MODEL_API_KEY_ENV`, else raw-name detection on `DIRECT_CHAT_MODEL_API_KEY` / `DIRECT_CHAT_MODEL_API` | Pass the env var name into the HTTP helper; do not copy or log the secret value |
+| Direct timeout/output cap | `DIRECT_MODEL_TIMEOUT_SECONDS` / `DIRECT_MAX_OUTPUT_CHARS` → `0` | `0` inherits normal `HERMES_TIMEOUT` / `MAX_REPLY_CHARS`; nonzero applies only to direct generation |
 
 OCR env precedence:
 
@@ -197,11 +237,19 @@ Behavior contracts:
   returns any non-`ok` status, including `error` and `skipped`. If fallback also
   fails, downstream OCR context degrades to placeholders rather than fabricating
   text.
-- Provider failure logs/runtime stats may include purpose, phase, group id,
-  booleans, return code, configured/not-configured flags, safe status/reason,
-  output/result lengths, and durations. They must not include prompt text, raw
-  stdout/stderr, OCR text, provider base URLs, API key env names/values, image
-  URLs, or full provider responses.
+- Direct fast-lane overrides are direct-only. Empty `DIRECT_*` values must preserve
+  the legacy direct path and must not change proactive replies, summaries, commands,
+  OCR, or generic Hermes calls.
+- `DIRECT_STRONG_MODEL_ALIAS`, when non-empty, may override only the model for
+  strong direct replies: reply-to-bot direct intents and direct intents with
+  current or quoted media/OCR context. Standard @/name direct replies continue
+  using the normal direct model selection. The strong lane must keep active
+  provider, provider base URL, API-key env name, group-session behavior, timeout,
+  output cap, and fallback config unchanged.
+- Direct fast/strong runtime stats and admin state may expose safe booleans and
+  low-cardinality profile labels such as `standard` / `strong`; they must not log
+  model aliases, provider URLs, API-key env names, prompt text, raw chat, OCR text,
+  or model outputs.
 
 Direct visible failure contract:
 
@@ -237,6 +285,10 @@ instead of exposing provider details or rotating raw provider errors.
 | `OCR_EXTERNAL_PROVIDER_ALLOWED=false` | Build no external primary/fallback OCR provider |
 | Primary OCR provider returns `ok` | Do not run OCR fallback |
 | Primary OCR provider returns `error` or `skipped` | Try OCR fallback if available |
+| Direct fast/strong aliases are unset or `0` | Normal direct replies preserve legacy routing, timeout, and output cap semantics |
+| `DIRECT_STRONG_MODEL_ALIAS` is set and direct intent replies to the bot or carries current/quoted media/OCR context | Override only the active direct model; keep provider/base-url/API-env/session/fallback unchanged |
+| `DIRECT_STRONG_MODEL_ALIAS` is set but direct intent is a standard @/name text reply | Ignore the strong alias and use normal direct model selection |
+| Direct fast/strong observability is emitted | Logs/runtime stats/admin state expose only configured booleans, timeout/output caps, and low-cardinality profile labels; no model alias, URL, API env name, prompt, raw chat, OCR text, or output |
 | OCR provider/fallback fails | Logs/stats omit OCR text, provider URL, API key env names/values, and raw provider payloads |
 
 #### 5. Good/Base/Bad Cases
@@ -249,6 +301,9 @@ instead of exposing provider details or rotating raw provider errors.
   lengths, purpose/phase, and duration.
 - Good: fallback text provider is legacy label `官方`; runtime sends Hermes CLI
   `--provider deepseek` and compares fallback identity using `deepseek`.
+- Good: `DIRECT_STRONG_MODEL_ALIAS` is set, a direct intent replies to the bot
+  or includes current/quoted media, and runtime passes only the strong model alias
+  while preserving the selected provider/session/fallback identity.
 - Good: `PRIMARY_OCR_MODEL_API` exists in the environment; runtime passes the env
   name `PRIMARY_OCR_MODEL_API` into the vision provider and does not copy the
   secret value into config/log output.
@@ -288,7 +343,9 @@ instead of exposing provider details or rotating raw provider errors.
   - direct HTTP fallback does not use group sessions;
   - `官方` is normalized to `deepseek` for Hermes CLI and fallback identity comparison;
   - matching primary/fallback model-provider/base-url/API-env skips fallback;
-  - Hermes/HTTP start/error logs do not include prompt/model/provider URL/API env details.
+  - direct fast/strong aliases apply only to direct replies and keep default behavior unchanged when empty;
+  - strong direct routing applies to reply-to-bot/media/OCR direct intents only and preserves provider/base-url/API-env/session/fallback behavior;
+  - strong direct logs/runtime stats do not include prompt/model/provider URL/API env details.
 - `tests/test_bridge_ocr.py` must assert:
   - primary OCR aliases win over legacy `OCR_*` settings;
   - vice OCR aliases win over legacy `OCR_FALLBACK_*` settings;

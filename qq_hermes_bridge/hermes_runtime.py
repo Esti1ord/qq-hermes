@@ -87,6 +87,7 @@ def run_openai_compatible_chat_completion(
     timeout: float,
     max_reply_chars: int = 0,
     transport: httpx.BaseTransport | None = None,
+    client: httpx.Client | None = None,
 ) -> dict[str, Any]:
     url = normalize_chat_completions_url(base_url)
     if not url:
@@ -106,8 +107,11 @@ def run_openai_compatible_chat_completion(
         "Content-Type": "application/json",
     }
     try:
-        with httpx.Client(timeout=timeout, trust_env=False, transport=transport) as client:
-            response = client.post(url, headers=headers, json=body)
+        if client is not None:
+            response = client.post(url, headers=headers, json=body, timeout=timeout)
+        else:
+            with httpx.Client(trust_env=False, transport=transport) as local_client:
+                response = local_client.post(url, headers=headers, json=body, timeout=timeout)
     except httpx.TimeoutException:
         return {"ok": False, "text": "", "reason": "timeout"}
     except httpx.HTTPError:

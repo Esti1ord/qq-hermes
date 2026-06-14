@@ -151,7 +151,7 @@ def test_build_prompt_logs_section_diagnostics_without_prompt_text(monkeypatch, 
     current = next(section for section in record["sections"] if section["key"] == "current_message")
     assert summary["source"] == "generated_summary"
     assert summary["priority"] == "low"
-    assert summary["budget_chars"] == 1000
+    assert summary["budget_chars"] == 600
     assert summary["truncated"] is True
     assert current["priority"] == "critical"
     assert current["budget_chars"] is None

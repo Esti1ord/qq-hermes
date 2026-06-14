@@ -121,6 +121,13 @@ def test_runtime_perf_fields_survive_without_content():
             "duration_bucket": runtime_stats.duration_bucket(1234),
             "queue_wait_ms": 50,
             "e2e_ms": 2222,
+            "prompt_build_ms": 12,
+            "prompt_profile": "fast",
+            "prompt_section_count": 10,
+            "prompt_truncated_count": 1,
+            "total_budget_chars": 6500,
+            "total_truncated": True,
+            "profile": "raw profile text should be unsafe by default",
             "input_chars": 100,
             "output_len": 20,
             "result_len": 30,
@@ -139,6 +146,13 @@ def test_runtime_perf_fields_survive_without_content():
     assert stat["duration_bucket"] == "1-3s"
     assert stat["queue_wait_ms"] == 50
     assert stat["e2e_ms"] == 2222
+    assert stat["prompt_build_ms"] == 12
+    assert stat["prompt_profile"] == "fast"
+    assert stat["prompt_section_count"] == 10
+    assert stat["prompt_truncated_count"] == 1
+    assert stat["total_budget_chars"] == 6500
+    assert stat["total_truncated"] is True
+    assert "profile" not in stat
 
 
 def test_runtime_summary_contains_only_counters_and_uptime():

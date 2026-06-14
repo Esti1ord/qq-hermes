@@ -208,6 +208,54 @@ def test_jrrp_keyword_sends_deterministic_once_per_day_without_llm(monkeypatch, 
     assert hermes_calls == []
 
 
+def test_direct_only_knobs_do_not_affect_jrrp_command(monkeypatch, tmp_path):
+    bridge = load_bridge_module()
+    bridge.JRRP_STATE_FILE = tmp_path / "jrrp_state.json"
+    bridge.JRRP_RESULTS_FILE = tmp_path / "jrrp_results.json"
+    bridge.JRRP_RESULTS_FILE.write_text("""
+{
+  "levels": [
+    {"name": "天选之人", "min": 100, "max": 100, "faces": ["✧*｡٩(ˊᗜˋ*)و✧*｡"], "comments": ["今日运势突破上限，随机数都在偏爱你。"]},
+    {"name": "小吉", "min": 60, "max": 74, "faces": ["(・ω・)ノ"], "comments": ["小有好运，适合做点轻松的事。"]}
+  ]
+}
+""".strip(), encoding="utf-8")
+    bridge.MIN_SECONDS_BETWEEN_REPLIES = 0.0
+    bridge._last_reply_at = 0.0
+    bridge.DIRECT_FAST_MODEL_ALIAS = "direct-fast-test"
+    bridge.DIRECT_STRONG_MODEL_ALIAS = "direct-strong-test"
+    bridge.DIRECT_CHAT_MODEL_PROVIDER = "custom"
+    bridge.DIRECT_CHAT_MODEL_BASE_URL = "configured-direct-base-url"
+    bridge.DIRECT_CHAT_MODEL_API_KEY_ENV = "DIRECT_TEST_KEY"
+    bridge.DIRECT_MODEL_TIMEOUT_SECONDS = 3
+    bridge.DIRECT_MAX_OUTPUT_CHARS = 24
+    sent = []
+    hermes_calls = []
+
+    monkeypatch.setattr(bridge, "run_hermes", lambda *args, **kwargs: hermes_calls.append(("hermes", args, kwargs)) or "不该调用")
+    monkeypatch.setattr(bridge, "run_hermes_raw", lambda *args, **kwargs: hermes_calls.append(("raw", args, kwargs)) or "不该调用")
+    monkeypatch.setattr(bridge, "run_direct_hermes_raw", lambda *args, **kwargs: hermes_calls.append(("direct", args, kwargs)) or "不该调用")
+
+    async def fake_send(group_id, message):
+        sent.append((group_id, message))
+        return {"ok": True}
+
+    monkeypatch.setattr(bridge, "send_group_msg", fake_send)
+
+    class FakeRequest:
+        async def json(self):
+            event = make_event(text="jrrp", user_id=44866989)
+            event["sender"] = {"nickname": "曲"}
+            event["message_id"] = "direct-knobs-jrrp"
+            return event
+
+    result = asyncio.run(bridge.onebot_event(FakeRequest()))
+
+    assert result["trigger"] == "jrrp"
+    assert result["replied"] is True
+    assert sent[0][1].startswith("@曲 今日人品：")
+    assert hermes_calls == []
+
 def test_jrrp_command_requires_exact_message():
     bridge = load_bridge_module()
 

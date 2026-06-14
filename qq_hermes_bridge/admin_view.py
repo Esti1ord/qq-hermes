@@ -104,9 +104,16 @@ def _safe_int(value: Any, default: int = 0) -> int:
 
 def _safe_float(value: Any, default: float = 0.0) -> float:
     try:
-        return float(value)
+        number = float(value)
     except (TypeError, ValueError):
         return default
+    if number != number or number in (float("inf"), float("-inf")):
+        return default
+    return number
+
+
+def _round_float(value: Any, digits: int = 3, default: float = 0.0) -> float:
+    return round(_safe_float(value, default), digits)
 
 
 def safe_counters(counters: Mapping[str, Any]) -> dict[str, int]:
@@ -187,16 +194,110 @@ def summarize_context(messages: Iterable[Mapping[str, Any]], summaries: Iterable
     }
 
 
-def safe_proactive_state(state: Mapping[str, Any], *, now: float) -> dict[str, Any]:
+def _safe_reason_label(value: Any) -> str:
+    text = str(value or "").strip()
+    if not text:
+        return ""
+    if ":" in text:
+        prefix, detail = text.split(":", 1)
+        safe_prefix = re.sub(r"[^a-zA-Z0-9_.-]", "_", prefix)[:32] or "reason"
+        safe_detail = safe_display_value(detail, max_chars=32) or REDACTED
+        return f"{safe_prefix}:{safe_detail}"
+    return safe_display_value(text, max_chars=48) or REDACTED
+
+
+def _safe_reason_labels(reasons: Any, *, limit: int = 20) -> list[str]:
+    if isinstance(reasons, (str, bytes)):
+        values = [reasons]
+    else:
+        try:
+            values = list(reasons or [])
+        except TypeError:
+            values = []
+    labels: list[str] = []
+    for item in values[: max(0, int(limit or 20))]:
+        label = _safe_reason_label(item)
+        if label:
+            labels.append(label)
+    return labels
+
+
+def safe_proactive_state(
+    state: Mapping[str, Any],
+    *,
+    now: float,
+    scoring: Mapping[str, Any] | None = None,
+    activity: Mapping[str, Any] | None = None,
+    limits: Mapping[str, Any] | None = None,
+    score_model: Mapping[str, Any] | None = None,
+) -> dict[str, Any]:
+    scoring = scoring or {}
+    activity = activity or {}
+    limits = limits or {}
+    score_model = score_model or {}
     sensitive_until = _safe_float(state.get("sensitive_until"), 0.0)
+    reasons = _safe_reason_labels(scoring.get("reasons"))
+    daily_remaining = limits.get("daily_remaining")
     return {
-        "score": round(_safe_float(state.get("score"), 0.0), 3),
+        "enabled": bool(score_model.get("enabled", True)),
+        "score": _round_float(scoring.get("score", state.get("score"))),
+        "current_window_score": _round_float(scoring.get("score", state.get("score"))),
+        "last_recorded_score": _round_float(state.get("score")),
+        "heat": _round_float(scoring.get("heat")),
+        "opening_score": _round_float(scoring.get("opening_score")),
+        "threshold": _round_float(scoring.get("threshold", score_model.get("threshold"))),
+        "threshold_source": safe_display_value(scoring.get("threshold_source") or score_model.get("threshold_source") or "default", max_chars=32),
+        "should_trigger": bool(scoring.get("should_trigger", False)),
+        "blocked": safe_display_value(scoring.get("blocked") or "", max_chars=48),
+        "direct_name_trigger": bool(scoring.get("direct_name_trigger", False)),
+        "reasons": reasons,
+        "reason_count": len(reasons),
+        "score_scale": "0-100",
+        "score_model": {
+            "mode": safe_display_value(score_model.get("mode") or "bounded_sliding_window", max_chars=48) or "bounded_sliding_window",
+            "scale": "0-100",
+            "scale_min": _round_float(score_model.get("scale_min"), default=0.0),
+            "scale_max": _round_float(score_model.get("scale_max"), default=100.0),
+            "window_seconds": _round_float(score_model.get("window_seconds")),
+            "threshold": _round_float(score_model.get("threshold", scoring.get("threshold"))),
+            "default_threshold": _round_float(score_model.get("default_threshold")),
+            "threshold_source": safe_display_value(score_model.get("threshold_source") or scoring.get("threshold_source") or "default", max_chars=32),
+            "legacy_accumulation": False,
+            "content_hidden": True,
+        },
+        "activity": {
+            "window_seconds": _round_float(activity.get("window_seconds")),
+            "message_count": _safe_int(activity.get("message_count")),
+            "speaker_count": _safe_int(activity.get("speaker_count")),
+            "dominant_speaker_share": _round_float(activity.get("dominant_speaker_share")),
+            "max_consecutive_same_speaker": _safe_int(activity.get("max_consecutive_same_speaker")),
+            "content_hidden": True,
+        },
+        "limits": {
+            "group_cooldown_seconds": _round_float(limits.get("group_cooldown_seconds")),
+            "group_cooldown_remaining_seconds": _safe_int(limits.get("group_cooldown_remaining_seconds")),
+            "daily_limit_per_group": _safe_int(limits.get("daily_limit_per_group")),
+            "daily_remaining": None if daily_remaining is None else _safe_int(daily_remaining),
+            "rate_limit_window_seconds": _round_float(limits.get("rate_limit_window_seconds")),
+            "rate_limit_max_replies": _safe_int(limits.get("rate_limit_max_replies")),
+            "rate_limit_recent_replies": _safe_int(limits.get("rate_limit_recent_replies")),
+            "rate_limit_reset_seconds": _safe_int(limits.get("rate_limit_reset_seconds")),
+            "sensitive_cooldown_remaining_seconds": _safe_int(limits.get("sensitive_cooldown_remaining_seconds")),
+        },
         "daily_count": _safe_int(state.get("daily_count"), 0),
         "sensitive_active": bool(sensitive_until and sensitive_until > now),
+        "content_hidden": True,
     }
 
 
-def _request_for_kind(kind: str, *, group_id: int | None, max_prompt_chars: int) -> prompt_service.PromptRequest:
+def _request_for_kind(
+    kind: str,
+    *,
+    group_id: int | None,
+    max_prompt_chars: int,
+    direct_prompt_profile: str = "rich",
+    direct_prompt_total_budget_chars: int | None = None,
+) -> prompt_service.PromptRequest:
     if kind == "proactive":
         return prompt_service.build_proactive_prompt_request(
             group_id=group_id,
@@ -225,6 +326,8 @@ def _request_for_kind(kind: str, *, group_id: int | None, max_prompt_chars: int)
         style_hint="hidden",
         media_context="hidden",
         learning_context="hidden",
+        direct_prompt_profile=direct_prompt_profile,
+        total_budget_chars=direct_prompt_total_budget_chars,
     )
 
 
@@ -265,11 +368,19 @@ def _prompt_kind_overview(
     max_prompt_chars: int,
     ocr_enabled: bool,
     self_learning_enabled: bool,
+    direct_prompt_profile: str = "rich",
+    direct_prompt_total_budget_chars: int | None = None,
 ) -> dict[str, Any]:
-    request = _request_for_kind(kind, group_id=group_id, max_prompt_chars=max_prompt_chars)
+    request = _request_for_kind(
+        kind,
+        group_id=group_id,
+        max_prompt_chars=max_prompt_chars,
+        direct_prompt_profile=direct_prompt_profile,
+        direct_prompt_total_budget_chars=direct_prompt_total_budget_chars,
+    )
     sections: list[dict[str, Any]] = []
     for section in request.sections:
-        budget = prompt_service._budget_for_section(request.kind, section)  # noqa: SLF001 - prompt metadata only; no body exposed.
+        budget = prompt_service._budget_for_section(request.kind, section, profile=request.profile)  # noqa: SLF001 - prompt metadata only; no body exposed.
         sections.append({
             "key": section.key,
             "title": section.title,
@@ -290,6 +401,8 @@ def _prompt_kind_overview(
         "section_count": len(sections),
         "rules_count": len(request.rules),
         "max_prompt_chars": max_prompt_chars if request.kind == "direct" else None,
+        "profile": request.profile,
+        "total_budget_chars": request.total_budget_chars if request.kind == "direct" else None,
         "output_contract": "group_text_only" if request.kind == "direct" else "group_text_or_silent_marker",
         "sections": sections,
     }
@@ -302,6 +415,8 @@ def build_context_composition_overview(
     max_prompt_chars: int,
     ocr_enabled: bool,
     self_learning_enabled: bool,
+    direct_prompt_profile: str = "rich",
+    direct_prompt_total_budget_chars: int | None = None,
 ) -> dict[str, Any]:
     """Return prompt composition metadata without prompt/body content."""
     return {
@@ -314,6 +429,8 @@ def build_context_composition_overview(
             max_prompt_chars=max_prompt_chars,
             ocr_enabled=ocr_enabled,
             self_learning_enabled=self_learning_enabled,
+            direct_prompt_profile=direct_prompt_profile,
+            direct_prompt_total_budget_chars=direct_prompt_total_budget_chars,
         ),
         "proactive": _prompt_kind_overview(
             "proactive",
@@ -322,6 +439,8 @@ def build_context_composition_overview(
             max_prompt_chars=max_prompt_chars,
             ocr_enabled=ocr_enabled,
             self_learning_enabled=self_learning_enabled,
+            direct_prompt_profile=direct_prompt_profile,
+            direct_prompt_total_budget_chars=direct_prompt_total_budget_chars,
         ),
     }
 
@@ -407,6 +526,7 @@ def build_admin_html() -> str:
   <main>
     <section><h2>实时连接状态</h2><div id="connection"></div><div id="error-details" class="error-box hidden" role="alert"></div></section>
     <section><h2>运行状态</h2><div id="runtime"></div></section>
+    <section><h2>主动发言评分</h2><div id="proactive"></div></section>
     <section><h2>模型 / Provider</h2><div id="model"></div></section>
     <section><h2>OCR / 媒体</h2><div id="ocr"></div></section>
     <section class="full"><h2>指标趋势</h2><div id="metrics" class="metric-grid"></div></section>
@@ -553,6 +673,42 @@ function renderRuntime(state) {
     ['更新时间', state.generated_at],
   ]);
 }
+function selectedProactiveState(state) {
+  const top = state.proactive || {};
+  if (top.selected_group) return top.selected_group;
+  const selected = selectedGroupFromState(state);
+  const groups = Array.isArray(state.groups) ? state.groups : [];
+  const group = groups.find((item) => String(item.group_id) === String(selected));
+  return (group && group.proactive) || {};
+}
+function renderProactive(state) {
+  const proactive = selectedProactiveState(state);
+  const model = proactive.score_model || ((state.proactive || {}).score_model) || {};
+  const activity = proactive.activity || {};
+  const limits = proactive.limits || {};
+  const score = proactive.current_window_score !== undefined ? proactive.current_window_score : proactive.score;
+  const threshold = proactive.threshold !== undefined ? proactive.threshold : model.threshold;
+  renderKV($('proactive'), [
+    ['启用', proactive.enabled],
+    ['评分模型', model.mode || 'bounded_sliding_window'],
+    ['分数范围', model.scale || '0-100'],
+    ['当前窗口评分', score],
+    ['热度分', proactive.heat],
+    ['开口信号分', proactive.opening_score],
+    ['触发阈值', `${text(threshold)}（${text(proactive.threshold_source || model.threshold_source || 'default')}）`],
+    ['窗口长度', `${activity.window_seconds || model.window_seconds || 0} 秒`],
+    ['窗口消息 / 发言人数', `${activity.message_count || 0} 条 / ${activity.speaker_count || 0} 人`],
+    ['最高单人占比', activity.dominant_speaker_share],
+    ['最长同人连发', activity.max_consecutive_same_speaker],
+    ['当前阻塞', proactive.blocked || '无'],
+    ['当前可触发', proactive.should_trigger],
+    ['今日主动次数', `${proactive.daily_count || 0} / ${limits.daily_limit_per_group || 0}`],
+    ['群冷却剩余', `${limits.group_cooldown_remaining_seconds || 0} 秒`],
+    ['限速窗口', `${limits.rate_limit_recent_replies || 0} / ${limits.rate_limit_max_replies || 0}（${limits.rate_limit_window_seconds || 0} 秒）`],
+    ['主动队列 / inflight', `${proactive.queue_size || 0} / ${proactive.inflight ? '是' : '否'}`],
+    ['原因标签', (proactive.reasons || []).join(', ') || '无'],
+  ]);
+}
 function renderModel(state) {
   const routing = state.model_routing || {};
   const primary = routing.primary || {};
@@ -624,9 +780,14 @@ function metricRows(state) {
   const counters = rt.counters || {};
   const ocr = state.ocr || {};
   const ocrStatus = ocr.status || {};
+  const proactive = selectedProactiveState(state);
   const replySuccess = numberValue(counters.direct_replies_sent) + numberValue(counters.proactive_replies_sent) + numberValue(counters.command_success);
   const replyErrors = numberValue(state.reply_errors && state.reply_errors.total);
   return [
+    { key: 'proactive_score', label: '主动窗口评分', value: numberValue(proactive.current_window_score !== undefined ? proactive.current_window_score : proactive.score), desc: '0-100 当前窗口热度 + 开口信号' },
+    { key: 'proactive_heat', label: '主动热度分', value: numberValue(proactive.heat), desc: '短窗口消息密度、人数和分布' },
+    { key: 'proactive_opening', label: '开口信号分', value: numberValue(proactive.opening_score), desc: '梗队形、问题、观点征询或共鸣信号' },
+    { key: 'proactive_threshold', label: '主动触发阈值', value: numberValue(proactive.threshold), desc: '当前群 0-100 阈值配置', trend: false },
     { key: 'queue_total', label: '队列总数', value: numberValue(pending.queue_total), desc: 'direct + proactive 待处理' },
     { key: 'active_worker_count', label: '活跃 worker', value: numberValue(pending.active_worker_count), desc: '正在运行的回复 worker' },
     { key: 'direct_inflight_count', label: 'Direct inflight', value: numberValue(pending.direct_inflight_count), desc: '直接回复生成中' },
@@ -682,7 +843,7 @@ function renderGroups(state) {
   clear(target);
   const table = document.createElement('table');
   const head = document.createElement('tr');
-  ['群', '模型', 'Provider', '最近消息', '摘要', '队列', '主动分'].forEach((name) => {
+  ['群', '模型', 'Provider', '最近消息', '摘要', '队列', '主动窗口分'].forEach((name) => {
     const th = document.createElement('th'); th.textContent = name; head.appendChild(th);
   });
   table.appendChild(head);
@@ -691,6 +852,8 @@ function renderGroups(state) {
     const ctx = group.context || {};
     const queues = group.queues || {};
     const proactive = group.proactive || {};
+    const pScore = proactive.current_window_score !== undefined ? proactive.current_window_score : (proactive.score || 0);
+    const pThreshold = proactive.threshold !== undefined ? proactive.threshold : ((proactive.score_model || {}).threshold || 0);
     [
       String(group.group_id) + (group.is_target_group ? '（目标）' : ''),
       group.model && group.model.model,
@@ -698,7 +861,7 @@ function renderGroups(state) {
       `${ctx.recent_message_count || 0} 条（人 ${ctx.human_message_count || 0} / 机器人 ${ctx.bot_message_count || 0}）`,
       `${ctx.summary_count || 0} 条 / ${ctx.summary_total_chars || 0} 字`,
       `direct ${queues.direct || 0} / proactive ${queues.proactive || 0}`,
-      proactive.score || 0,
+      `${pScore} / ${pThreshold}${proactive.blocked ? `（${proactive.blocked}）` : ''}`,
     ].forEach((value) => { const td = document.createElement('td'); td.textContent = text(value); tr.appendChild(td); });
     table.appendChild(tr);
   });
@@ -890,6 +1053,7 @@ async function loadState() {
     const state = await response.json();
     populateGroupSelector(state);
     renderRuntime(state);
+    renderProactive(state);
     renderModel(state);
     renderOcr(state);
     renderMetrics(state);

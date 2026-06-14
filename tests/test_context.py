@@ -14,8 +14,8 @@ def load_bridge_module():
     return module
 
 
-def make_event(group_id=975805598, user_id=111, nickname="甲", text="你好", self_id=3975680980):
-    return {
+def make_event(group_id=975805598, user_id=111, nickname="甲", text="你好", self_id=3975680980, message_id=None):
+    event = {
         "post_type": "message",
         "message_type": "group",
         "group_id": group_id,
@@ -24,6 +24,9 @@ def make_event(group_id=975805598, user_id=111, nickname="甲", text="你好", s
         "sender": {"nickname": nickname},
         "message": [{"type": "text", "data": {"text": text}}],
     }
+    if message_id is not None:
+        event["message_id"] = message_id
+    return event
 
 
 def test_recent_context_keeps_latest_group_messages_only():
@@ -196,6 +199,7 @@ def test_context_command_reply_is_group_scoped():
 def test_onebot_context_command_without_at_replies_directly(monkeypatch):
     bridge = load_bridge_module()
     bridge.BOT_QQ = "3975680980"
+    bridge.ALLOWED_GROUP_IDS = {975805598}
     bridge.MIN_SECONDS_BETWEEN_REPLIES = 0.0
     bridge.PROACTIVE_ENABLED = False
     bridge._recent_messages_by_group.clear()
@@ -213,7 +217,7 @@ def test_onebot_context_command_without_at_replies_directly(monkeypatch):
 
     class FakeRequest:
         async def json(self):
-            return make_event(group_id=975805598, user_id=222, nickname="乙", text="/context 看我现在记住了哪些前情")
+            return make_event(group_id=975805598, user_id=222, nickname="乙", text="/context 看我现在记住了哪些前情", message_id=7301)
 
     result = asyncio.run(bridge.onebot_event(FakeRequest()))
 
@@ -307,6 +311,7 @@ def test_default_real_context_cache_is_not_overwritten_during_pytest(monkeypatch
 def test_send_group_msg_reports_failed_status_for_context_command(monkeypatch):
     bridge = load_bridge_module()
     bridge.BOT_QQ = "3975680980"
+    bridge.ALLOWED_GROUP_IDS = {781423661}
     bridge.MIN_SECONDS_BETWEEN_REPLIES = 0.0
     bridge.PROACTIVE_ENABLED = False
     bridge._recent_messages_by_group.clear()
@@ -319,7 +324,7 @@ def test_send_group_msg_reports_failed_status_for_context_command(monkeypatch):
 
     class FakeRequest:
         async def json(self):
-            return make_event(group_id=781423661, user_id=222, nickname="乙", text="/context")
+            return make_event(group_id=781423661, user_id=222, nickname="乙", text="/context", message_id=7302)
 
     result = asyncio.run(bridge.onebot_event(FakeRequest()))
 

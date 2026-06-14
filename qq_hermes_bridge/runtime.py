@@ -17,6 +17,7 @@ import re
 import subprocess
 import time
 from collections import deque
+from contextlib import asynccontextmanager
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any
@@ -27,7 +28,7 @@ from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import HTMLResponse, PlainTextResponse
 from pydantic import BaseModel
 
-from qq_hermes_bridge import admin_memory, admin_view, app_helpers, command_utils, commands, config_utils, content_analysis_log as analysis_log_utils, context_store, events, group_files, handlers, hermes_runtime, jrrp, logging_utils, matching, media, media_fetch, metrics, model_output, onebot, outbound, proactive, profiles, prompt_time, reply_processing, reply_queue, runtime_stats, self_learning, text_utils, user_controls, vision
+from qq_hermes_bridge import admin_memory, admin_view, app_helpers, command_utils, commands, config_utils, content_analysis_log as analysis_log_utils, context_store, events, group_files, handlers, hermes_runtime, jrrp, logging_utils, matching, media, media_fetch, metrics, model_output, onebot, outbound, proactive, profiles, prompt_service, prompt_time, reply_processing, reply_queue, runtime_stats, self_learning, text_utils, user_controls, vision
 
 _RUNTIME_SOURCE_PATH = globals().get("_RUNTIME_PATH")
 BASE_DIR = (
@@ -97,6 +98,14 @@ HERMES_FALLBACK_MODEL = _env_first("VICE_CHAT_MODEL", "HERMES_FALLBACK_MODEL", d
 HERMES_FALLBACK_PROVIDER = _env_first("VICE_CHAT_MODEL_PROVIDER", "HERMES_FALLBACK_PROVIDER", default=config_utils.DEFAULT_FALLBACK_CHAT_PROVIDER)
 HERMES_FALLBACK_PROVIDER_BASE_URL = _env_first(*config_utils.FALLBACK_CHAT_PROVIDER_URL_ENV_NAMES)
 HERMES_FALLBACK_API_KEY_ENV = config_utils.api_key_env_name_from_groups(config_utils.FALLBACK_CHAT_API_KEY_ENV_GROUPS)
+DIRECT_FAST_MODEL_ALIAS = _env_first("DIRECT_FAST_MODEL_ALIAS", default="")
+DIRECT_STRONG_MODEL_ALIAS = _env_first("DIRECT_STRONG_MODEL_ALIAS", default="")
+DIRECT_CHAT_MODEL_PROVIDER = _env_first("DIRECT_CHAT_MODEL_PROVIDER", default="")
+DIRECT_CHAT_MODEL_BASE_URL = _env_first("DIRECT_CHAT_MODEL_URL", "DIRECT_CHAT_MODEL_BASE_URL")
+DIRECT_CHAT_MODEL_API_KEY_ENV = _api_key_env_name(
+    explicit_names=("DIRECT_CHAT_MODEL_API_KEY_ENV",),
+    raw_names=("DIRECT_CHAT_MODEL_API_KEY", "DIRECT_CHAT_MODEL_API"),
+)
 HERMES_MODEL_BY_GROUP = config_utils.parse_group_str_map(os.getenv("HERMES_MODEL_BY_GROUP", ""))
 HERMES_PROVIDER_BY_GROUP = config_utils.parse_group_str_map(os.getenv("HERMES_PROVIDER_BY_GROUP", ""))
 HERMES_GROUP_SESSIONS_ENABLED = os.getenv("HERMES_GROUP_SESSIONS_ENABLED", "true").lower() in {"1", "true", "yes"}
@@ -107,7 +116,10 @@ HERMES_SESSION_MAX_BODY_CHARS = int(os.getenv("HERMES_SESSION_MAX_BODY_CHARS", "
 HERMES_SESSION_COMPACT_SUMMARY_CHARS = int(os.getenv("HERMES_SESSION_COMPACT_SUMMARY_CHARS", "1200"))
 REPLY_PREFIX = os.getenv("REPLY_PREFIX", "").strip()
 MAX_PROMPT_CHARS = int(os.getenv("MAX_PROMPT_CHARS", "3500"))
+DIRECT_PROMPT_PROFILE = prompt_service.normalize_direct_prompt_profile(os.getenv("DIRECT_PROMPT_PROFILE", "fast"))
+DIRECT_PROMPT_TOTAL_BUDGET_CHARS = max(0, int(os.getenv("DIRECT_PROMPT_TOTAL_BUDGET_CHARS", "6500")))
 HERMES_TIMEOUT = int(os.getenv("HERMES_TIMEOUT", "180"))
+DIRECT_MODEL_TIMEOUT_SECONDS = max(0, int(os.getenv("DIRECT_MODEL_TIMEOUT_SECONDS", "0")))
 MIN_SECONDS_BETWEEN_REPLIES = float(os.getenv("MIN_SECONDS_BETWEEN_REPLIES", "2"))
 CONTEXT_MAX_MESSAGES = int(os.getenv("CONTEXT_MAX_MESSAGES", "20"))
 CONTEXT_SUMMARY_MAX = int(os.getenv("CONTEXT_SUMMARY_MAX", "30"))
@@ -123,7 +135,9 @@ KNOWLEDGE_MAX_CHARS = int(os.getenv("KNOWLEDGE_MAX_CHARS", "3500"))
 USER_COOLDOWN_SECONDS = float(os.getenv("USER_COOLDOWN_SECONDS", "20"))
 MAX_PENDING_REPLIES = int(os.getenv("MAX_PENDING_REPLIES", "3"))
 MAX_PENDING_DIRECT_REPLIES = int(os.getenv("MAX_PENDING_DIRECT_REPLIES", str(max(20, MAX_PENDING_REPLIES))))
+DIRECT_COALESCE_WINDOW_MS = max(0, int(os.getenv("DIRECT_COALESCE_WINDOW_MS", "0")))
 MAX_REPLY_CHARS = int(os.getenv("MAX_REPLY_CHARS", "450"))
+DIRECT_MAX_OUTPUT_CHARS = max(0, int(os.getenv("DIRECT_MAX_OUTPUT_CHARS", "0")))
 PUNCTUATION_STYLE_ENABLED = os.getenv("PUNCTUATION_STYLE_ENABLED", "false").lower() in {"1", "true", "yes"}
 SKIP_UNCLEAR_MENTIONS = os.getenv("SKIP_UNCLEAR_MENTIONS", "true").lower() not in {"0", "false", "no"}
 CONTEXT_PERSIST_ENABLED = os.getenv("CONTEXT_PERSIST_ENABLED", "false").lower() in {"1", "true", "yes"}
@@ -139,6 +153,7 @@ OCR_DOWNLOAD_TIMEOUT = float(os.getenv("OCR_DOWNLOAD_TIMEOUT", "8"))
 OCR_PROVIDER_TIMEOUT = float(os.getenv("OCR_PROVIDER_TIMEOUT", "30"))
 OCR_MAX_RESULT_CHARS = int(os.getenv("OCR_MAX_RESULT_CHARS", "800"))
 OCR_INCLUDE_IN_PROMPT = config_utils.parse_bool(os.getenv("OCR_INCLUDE_IN_PROMPT", "true"))
+OCR_DIRECT_PROMPT_WAIT_MS = max(0, int(os.getenv("OCR_DIRECT_PROMPT_WAIT_MS", "1200")))
 OCR_INCLUDE_IN_CONTEXT = config_utils.parse_bool(os.getenv("OCR_INCLUDE_IN_CONTEXT", "true"))
 OCR_PERSIST_TEXT_IN_CONTEXT = config_utils.parse_bool(os.getenv("OCR_PERSIST_TEXT_IN_CONTEXT", "false"))
 OCR_LOG_TEXT = config_utils.parse_bool(os.getenv("OCR_LOG_TEXT", "false"))
@@ -220,7 +235,7 @@ def parse_group_float_map(raw: str) -> dict[int, float]:
 
 
 PROACTIVE_ENABLED = os.getenv("PROACTIVE_ENABLED", "true").lower() in {"1", "true", "yes"}
-PROACTIVE_TRIGGER_THRESHOLD = float(os.getenv("PROACTIVE_TRIGGER_THRESHOLD", "16"))
+PROACTIVE_TRIGGER_THRESHOLD = float(os.getenv("PROACTIVE_TRIGGER_THRESHOLD", "70"))
 PROACTIVE_TRIGGER_THRESHOLDS_BY_GROUP = parse_group_float_map(os.getenv("PROACTIVE_TRIGGER_THRESHOLDS_BY_GROUP", ""))
 PROACTIVE_GROUP_COOLDOWN_SECONDS = float(os.getenv("PROACTIVE_GROUP_COOLDOWN_SECONDS", "900"))
 PROACTIVE_DECAY_PER_MINUTE = float(os.getenv("PROACTIVE_DECAY_PER_MINUTE", "1"))
@@ -229,7 +244,7 @@ PROACTIVE_RATE_LIMIT_WINDOW_SECONDS = float(os.getenv("PROACTIVE_RATE_LIMIT_WIND
 PROACTIVE_RATE_LIMIT_MAX_REPLIES = int(os.getenv("PROACTIVE_RATE_LIMIT_MAX_REPLIES", "6"))
 PROACTIVE_CONTEXT_FOCUS_MESSAGES = int(os.getenv("PROACTIVE_CONTEXT_FOCUS_MESSAGES", "3"))
 PROACTIVE_CONTEXT_MEMORY_MESSAGES = int(os.getenv("PROACTIVE_CONTEXT_MEMORY_MESSAGES", "8"))
-PROACTIVE_BURST_WINDOW_SECONDS = float(os.getenv("PROACTIVE_BURST_WINDOW_SECONDS", "120"))
+PROACTIVE_BURST_WINDOW_SECONDS = float(os.getenv("PROACTIVE_BURST_WINDOW_SECONDS", "20"))
 PROACTIVE_BURST_MESSAGE_THRESHOLD = int(os.getenv("PROACTIVE_BURST_MESSAGE_THRESHOLD", "6"))
 PROACTIVE_BURST_USER_THRESHOLD = int(os.getenv("PROACTIVE_BURST_USER_THRESHOLD", "3"))
 PROACTIVE_NAME_TRIGGERS = env_list("PROACTIVE_NAME_TRIGGERS", "Esti,Estilord,Esti1ord,机器人,bot,小E")
@@ -247,6 +262,7 @@ PROACTIVE_NIGHT_START = os.getenv("PROACTIVE_NIGHT_START", "00:30")
 PROACTIVE_NIGHT_END = os.getenv("PROACTIVE_NIGHT_END", "08:30")
 PROACTIVE_NIGHT_SCORE_MULTIPLIER = float(os.getenv("PROACTIVE_NIGHT_SCORE_MULTIPLIER", "0.2"))
 PROACTIVE_SENSITIVE_KEYWORDS = env_list("PROACTIVE_SENSITIVE_KEYWORDS", "密码,验证码,账号,诈骗,开盒,身份证,裸照")
+PROACTIVE_QUEUE_MAX_AGE_SECONDS = float(os.getenv("PROACTIVE_QUEUE_MAX_AGE_SECONDS", "45"))
 STYLE_HINTS = [
     "像群友随口接话，短一点，不要端着。",
     "可以轻微吐槽，但别攻击人，也别拱火。",
@@ -300,7 +316,11 @@ _interaction_order: deque[str] = deque(maxlen=max(1, PERF_OBS_MAX_INTERACTIONS))
 _ocr_result_cache: dict[str, tuple[float, media.MediaRecognition]] = {}
 _ocr_inflight: dict[str, asyncio.Task] = {}
 _ocr_context_tasks: set[asyncio.Task] = set()
+_ocr_direct_tasks: set[asyncio.Task] = set()
 _ocr_semaphore: asyncio.Semaphore | None = None
+_context_compaction_pending_by_group: dict[int, deque[list[dict[str, Any]]]] = {}
+_context_compaction_tasks_by_group: dict[int, asyncio.Task] = {}
+_text_http_client: httpx.Client | None = None
 
 
 def log(obj: Any) -> None:
@@ -632,7 +652,7 @@ def persona_bundle_for_prompt(group_id: int | None = None) -> str:
 
 
 def strip_normal_chat_search_guidance(text: str) -> str:
-    """普通聊天不再承载联网搜索功能，过滤人设/知识库里的旧搜索指令。"""
+    """过滤人设/知识库里的旧搜索指令；搜索能力由核心 prompt policy 统一引导。"""
     return group_files.strip_normal_chat_search_guidance(text)
 
 
@@ -724,26 +744,40 @@ def enqueue_reply_intent(group_id: int, intent: dict[str, Any]) -> dict[str, Any
         max_pending_replies=MAX_PENDING_REPLIES,
         proactive_rate_limit_max_replies=PROACTIVE_RATE_LIMIT_MAX_REPLIES,
         max_pending_direct_replies=MAX_PENDING_DIRECT_REPLIES,
+        direct_coalesce_window_ms=DIRECT_COALESCE_WINDOW_MS,
+        now=now,
     )
     log({
-        "type": "reply_queued" if queued.get("queued") else "reply_queue_rejected",
+        "type": "reply_coalesced" if queued.get("coalesced") else ("reply_queued" if queued.get("queued") else "reply_queue_rejected"),
         "group_id": group_id,
         "kind": queued.get("kind") or intent.get("kind"),
         "queued": queued.get("queued"),
+        "coalesced": bool(queued.get("coalesced")),
         "queue_size": queued.get("queue_size"),
         "queue_limit": queued.get("queue_limit"),
         "reason": queued.get("reason"),
+        "merged_count": queued.get("merged_count"),
+        "coalesced_count": queued.get("coalesced_count"),
+        "coalesce_window_ms": queued.get("coalesce_window_ms"),
     })
-    increment_runtime_counter("reply_enqueued" if queued.get("queued") else "queue_full")
+    if queued.get("coalesced"):
+        increment_runtime_counter("direct_coalesced")
+    else:
+        increment_runtime_counter("reply_enqueued" if queued.get("queued") else "queue_full")
     emit_perf_stat(
         "queue_event",
         group_id=group_id,
         interaction_id=interaction_id,
         kind=queued.get("kind") or intent.get("kind"),
         queued=bool(queued.get("queued")),
+        coalesced=bool(queued.get("coalesced")),
         queue_size=queued.get("queue_size"),
         queue_limit=queued.get("queue_limit"),
         reason=queued.get("reason") or "",
+        status=queued.get("status") or ("coalesced" if queued.get("coalesced") else ("queued" if queued.get("queued") else "rejected")),
+        merged_count=queued.get("merged_count") or 0,
+        coalesced_count=queued.get("coalesced_count") or (1 if queued.get("queued") else 0),
+        coalesce_window_ms=queued.get("coalesce_window_ms") or DIRECT_COALESCE_WINDOW_MS,
         event_to_enqueue_ms=runtime_elapsed_ms(intent.get("_perf_event_received_at")),
         direct_queue_size=reply_queue_size_by_kind(group_id, "direct"),
         proactive_queue_size=reply_queue_size_by_kind(group_id, "proactive"),
@@ -951,13 +985,21 @@ def normalize_reply_linebreaks(text: str) -> str:
     return text_utils.normalize_reply_linebreaks(text)
 
 
-def finalize_reply(text: str) -> str:
+def finalize_reply_with_limit(text: str, max_chars: int) -> str:
     return text_utils.finalize_reply(
         text,
-        max_chars=MAX_REPLY_CHARS,
+        max_chars=max_chars,
         empty_reply=pick_template("empty_reply", text or ""),
         punctuation_style_enabled=PUNCTUATION_STYLE_ENABLED,
     )
+
+
+def finalize_reply(text: str) -> str:
+    return finalize_reply_with_limit(text, MAX_REPLY_CHARS)
+
+
+def finalize_direct_reply(text: str) -> str:
+    return finalize_reply_with_limit(text, direct_max_output_chars())
 
 
 def prepare_reply_text(text: str) -> str:
@@ -1096,6 +1138,89 @@ def visible_context_summaries(group_id: int | None, limit: int = 5) -> list[str]
     )
 
 
+def _apply_context_summary(group_id: int, old_messages: list[dict[str, Any]], summary: str, *, start: float | None = None, async_mode: bool = False) -> None:
+    messages = recent_messages_for_group(group_id)
+    summary = finalize_summary(summary)
+    if summary:
+        context_summaries_for_group(group_id).append(summary)
+        log({
+            "type": "context_compacted",
+            "group_id": group_id,
+            "messages": len(old_messages),
+            "summary_len": len(summary or ""),
+            "async": async_mode,
+        })
+    if CONTEXT_PERSIST_ENABLED:
+        save_context_cache()
+    runtime_stat(
+        "context_compaction",
+        group_id=group_id,
+        messages_compacted=len(old_messages),
+        summary_len=len(summary or ""),
+        recent_context_count=len(messages),
+        summary_count=len(context_summaries_for_group(group_id)),
+        pending_batches=len(_context_compaction_pending_by_group.get(group_id) or ()),
+        duration_ms=runtime_elapsed_ms(start) if start is not None else 0,
+        ok=True,
+        async_mode=async_mode,
+    )
+
+
+def compact_context_messages(group_id: int, old_messages: list[dict[str, Any]], *, start: float | None = None, async_mode: bool = False) -> None:
+    summary = summarize_context_messages(group_id, old_messages) if CONTEXT_SUMMARIZE_ENABLED else "；".join(str(m.get("text") or "") for m in old_messages)
+    _apply_context_summary(group_id, old_messages, summary, start=start, async_mode=async_mode)
+
+
+
+async def run_context_compaction_worker(group_id: int) -> None:
+    try:
+        while True:
+            pending = _context_compaction_pending_by_group.get(group_id)
+            if not pending:
+                return
+            old_messages = pending.popleft()
+            start = runtime_now()
+            try:
+                summary = await asyncio.to_thread(summarize_context_messages, group_id, old_messages) if CONTEXT_SUMMARIZE_ENABLED else "；".join(str(m.get("text") or "") for m in old_messages)
+                _apply_context_summary(group_id, old_messages, summary, start=start, async_mode=True)
+            except Exception as exc:
+                log({"type": "context_compaction_error", "group_id": group_id, "error": type(exc).__name__})
+                runtime_stat(
+                    "context_compaction",
+                    group_id=group_id,
+                    messages_compacted=len(old_messages),
+                    summary_len=0,
+                    recent_context_count=len(recent_messages_for_group(group_id)),
+                    summary_count=len(context_summaries_for_group(group_id)),
+                    pending_batches=len(_context_compaction_pending_by_group.get(group_id) or ()),
+                    duration_ms=runtime_elapsed_ms(start),
+                    ok=False,
+                    async_mode=True,
+                    error=type(exc).__name__,
+                )
+    finally:
+        current = asyncio.current_task()
+        if _context_compaction_tasks_by_group.get(group_id) is current:
+            _context_compaction_tasks_by_group.pop(group_id, None)
+        pending = _context_compaction_pending_by_group.get(group_id)
+        if pending:
+            schedule_context_compaction_worker(group_id)
+
+
+def schedule_context_compaction_worker(group_id: int) -> bool:
+    try:
+        asyncio.get_running_loop()
+    except RuntimeError:
+        return False
+    task = _context_compaction_tasks_by_group.get(group_id)
+    if task is not None and not task.done():
+        return True
+    task = asyncio.create_task(run_context_compaction_worker(group_id))
+    _context_compaction_tasks_by_group[group_id] = task
+    log({"type": "context_compaction_scheduled", "group_id": group_id, "pending_batches": len(_context_compaction_pending_by_group.get(group_id) or ())})
+    return True
+
+
 def compact_context_if_needed(group_id: int) -> None:
     messages = recent_messages_for_group(group_id)
     overflow = len(messages) - CONTEXT_MAX_MESSAGES
@@ -1104,20 +1229,25 @@ def compact_context_if_needed(group_id: int) -> None:
         return
     take = min(max(batch_size, overflow), len(messages) - CONTEXT_MAX_MESSAGES)
     old_messages = [messages.popleft() for _ in range(take)]
-    summary = summarize_context_messages(group_id, old_messages) if CONTEXT_SUMMARIZE_ENABLED else "；".join(str(m.get("text") or "") for m in old_messages)
-    summary = finalize_summary(summary)
-    if summary:
-        context_summaries_for_group(group_id).append(summary)
-        log({"type": "context_compacted", "group_id": group_id, "messages": len(old_messages), "summary_len": len(summary or "")})
-        runtime_stat(
-            "context_compaction",
-            group_id=group_id,
-            messages_compacted=len(old_messages),
-            summary_len=len(summary),
-            recent_context_count=len(messages),
-            summary_count=len(context_summaries_for_group(group_id)),
-            ok=True,
-        )
+    start = runtime_now()
+    if CONTEXT_SUMMARIZE_ENABLED:
+        _context_compaction_pending_by_group.setdefault(group_id, deque()).append(old_messages)
+        if schedule_context_compaction_worker(group_id):
+            emit_perf_stat(
+                "context_compaction_scheduled",
+                group_id=group_id,
+                messages_compacted=len(old_messages),
+                recent_context_count=len(messages),
+                pending_batches=len(_context_compaction_pending_by_group.get(group_id) or ()),
+            )
+            return
+        pending = _context_compaction_pending_by_group.get(group_id)
+        if pending:
+            try:
+                pending.pop()
+            except IndexError:
+                pass
+    compact_context_messages(group_id, old_messages, start=start, async_mode=False)
 
 
 def remember_message_item(group_id: int, item: dict[str, Any]) -> None:
@@ -1368,6 +1498,14 @@ def decay_proactive_score(state: dict[str, Any], now: float) -> None:
     proactive.decay_score(state, now=now, decay_per_minute=PROACTIVE_DECAY_PER_MINUTE)
 
 
+def proactive_current_activity(group_id: int, now: float | None = None) -> list[dict[str, Any]]:
+    return proactive.prune_recent_activity(
+        recent_activity_for_group(group_id),
+        now=time.time() if now is None else now,
+        window_seconds=PROACTIVE_BURST_WINDOW_SECONDS,
+    )
+
+
 def proactive_add_recent_activity(group_id: int, event: dict[str, Any], text: str, now: float) -> list[dict[str, Any]]:
     return proactive.add_recent_activity(
         recent_activity_for_group(group_id),
@@ -1419,9 +1557,8 @@ def update_proactive_score(event: dict[str, Any], now: float | None = None) -> d
         return {"score": 0.0, "should_trigger": False, "reasons": [], "blocked": "disabled_or_ineligible"}
     text = message_to_text(event.get("message"))
     state = proactive_state_for_group(group_id)
-    decay_proactive_score(state, now)
     if matching.contains_any_phrase(text, PROACTIVE_SENSITIVE_KEYWORDS):
-        state["score"] = max(0.0, float(state.get("score", 0.0)) - 5.0)
+        state["score"] = 0.0
         state["sensitive_until"] = now + PROACTIVE_SENSITIVE_COOLDOWN_SECONDS
         return {"score": state["score"], "should_trigger": False, "reasons": ["sensitive"], "blocked": "sensitive"}
 
@@ -1441,6 +1578,42 @@ def update_proactive_score(event: dict[str, Any], now: float | None = None) -> d
         night_score_multiplier=PROACTIVE_NIGHT_SCORE_MULTIPLIER,
         is_night=is_night_time(now),
         threshold=PROACTIVE_TRIGGER_THRESHOLDS_BY_GROUP.get(group_id, PROACTIVE_TRIGGER_THRESHOLD),
+        topic_keywords=PROACTIVE_TOPIC_KEYWORDS,
+        light_keywords=PROACTIVE_LIGHT_KEYWORDS,
+    )
+
+
+def proactive_revalidation_reasons(reasons: list[Any] | None) -> list[str]:
+    recomputed_prefixes = ("heat:", "opening:", "signal:", "penalty:")
+    out: list[str] = []
+    for reason in reasons or []:
+        text = str(reason)
+        if text == "night_scaled" or text.startswith(recomputed_prefixes):
+            continue
+        out.append(text)
+    return out
+
+
+def revalidate_proactive_score(group_id: int, proactive_data: dict[str, Any], now: float | None = None) -> dict[str, Any]:
+    now = time.time() if now is None else now
+    state = proactive_state_for_group(group_id)
+    blocked = proactive_block_reason(state, now, group_id)
+    return proactive.update_score_core(
+        state,
+        activity=proactive_current_activity(group_id, now),
+        base_add=0.0,
+        reasons=proactive_revalidation_reasons(proactive_data.get("reasons")),
+        now=now,
+        blocked=blocked,
+        burst_message_threshold=PROACTIVE_BURST_MESSAGE_THRESHOLD,
+        burst_user_threshold=PROACTIVE_BURST_USER_THRESHOLD,
+        score_burst=PROACTIVE_SCORE_BURST,
+        score_multi_user=PROACTIVE_SCORE_MULTI_USER,
+        night_score_multiplier=PROACTIVE_NIGHT_SCORE_MULTIPLIER,
+        is_night=is_night_time(now),
+        threshold=PROACTIVE_TRIGGER_THRESHOLDS_BY_GROUP.get(group_id, PROACTIVE_TRIGGER_THRESHOLD),
+        topic_keywords=PROACTIVE_TOPIC_KEYWORDS,
+        light_keywords=PROACTIVE_LIGHT_KEYWORDS,
     )
 
 
@@ -1506,12 +1679,27 @@ def prompt_render_diagnostics(kind: str, group_id: int | None, rendered: Any) ->
         "char_count": getattr(rendered, "char_count", len(getattr(rendered, "text", ""))),
         "section_count": len(sections),
         "truncated_sections": truncated_sections,
+        "profile": runtime_stats.normalize_label(getattr(rendered, "profile", "") or kind),
+        "total_budget_chars": getattr(rendered, "total_budget_chars", None),
+        "total_truncated": bool(getattr(rendered, "total_truncated", False)),
         "sections": sections,
     }
 
 
 def log_prompt_render(kind: str, group_id: int | None, rendered: Any) -> None:
-    log(prompt_render_diagnostics(kind, group_id, rendered))
+    diagnostics = prompt_render_diagnostics(kind, group_id, rendered)
+    log(diagnostics)
+    emit_perf_stat(
+        "prompt_rendered",
+        kind=kind,
+        group_id=group_id,
+        char_count=diagnostics.get("char_count", 0),
+        section_count=diagnostics.get("section_count", 0),
+        truncated_count=len(diagnostics.get("truncated_sections") or []),
+        prompt_profile=diagnostics.get("profile") or kind,
+        total_budget_chars=diagnostics.get("total_budget_chars") or 0,
+        total_truncated=bool(diagnostics.get("total_truncated")),
+    )
 
 
 def build_prompt(event: dict[str, Any], user_text: str, media_context: str = "（当前消息没有图片识别结果）") -> str:
@@ -1539,6 +1727,8 @@ def build_prompt(event: dict[str, Any], user_text: str, media_context: str = "�
         style_hint=style_hint_for(event),
         media_context=media_context,
         learning_context=self_learning_context_for_prompt(group_id),
+        direct_prompt_profile=DIRECT_PROMPT_PROFILE,
+        total_budget_chars=DIRECT_PROMPT_TOTAL_BUDGET_CHARS,
     )
     log_prompt_render("direct", group_id, rendered)
     return rendered.text
@@ -1926,7 +2116,7 @@ async def recognize_media_for_event(event: dict[str, Any], *, route: str, includ
             log({"type": "ocr_skipped", "group_id": event.get("group_id"), "message_id": message_id_from_event(event), "route": route, "reason": "provider_none"})
             emit_perf_stat("ocr_route_result", route=route, group_id=event.get("group_id"), media_count=len(refs), ok_count=0, error_count=0, skipped_count=len(refs), duration_ms=runtime_elapsed_ms(start), enabled=True, provider="none", reason="provider_none")
             return {"refs": refs, "results": [], "media_context": "（当前消息没有图片识别结果）"}
-    results = [await fetch_and_recognize_one_media_cached(ref, provider) for ref in refs]
+    results = await asyncio.gather(*(fetch_and_recognize_one_media_cached(ref, provider) for ref in refs))
     ok_count = sum(1 for result in results if result.status == "ok")
     error_count = sum(1 for result in results if result.status == "error")
     skipped_count = sum(1 for result in results if result.status == "skipped")
@@ -1974,6 +2164,56 @@ def update_recent_message_media_context(group_id: int | None, identity: dict[str
                 save_context_cache()
             return True
     return False
+
+
+def _consume_ocr_direct_task(task: asyncio.Task) -> None:
+    _ocr_direct_tasks.discard(task)
+    if task.cancelled():
+        return
+    try:
+        task.result()
+    except Exception as exc:
+        log({"type": "ocr_direct_task_error", "error": type(exc).__name__})
+
+
+async def recognize_and_update_direct_context_for_event(event: dict[str, Any], *, base_text: str, identity: dict[str, str], scheduled_at: float | None = None) -> dict[str, Any]:
+    start = runtime_now()
+    group_id = group_id_from_event(event)
+    media_data = await recognize_media_for_event(event, route="direct")
+    media_context = str(media_data.get("media_context") or "（当前消息没有图片识别结果）")
+    updated = update_recent_message_media_context(group_id, identity, media_context, text_without_ocr=base_text)
+    result_chars = 0 if media_context == "（当前消息没有图片识别结果）" else len(media_context)
+    log({
+        "type": "ocr_direct_context_update" if updated else "ocr_direct_context_update_missed",
+        "group_id": group_id,
+        "message_id": identity.get("message_id") or message_id_from_event(event),
+        "updated": updated,
+        "result_chars": result_chars,
+    })
+    emit_perf_stat(
+        "ocr_direct_context_update",
+        group_id=group_id,
+        updated=updated,
+        result_len=result_chars,
+        schedule_delay_ms=runtime_elapsed_ms(scheduled_at),
+        duration_ms=runtime_elapsed_ms(start),
+    )
+    return media_data
+
+
+def schedule_direct_ocr_for_event(event: dict[str, Any], *, base_text: str, identity: dict[str, str]) -> asyncio.Task | None:
+    group_id = group_id_from_event(event)
+    if not ocr_enabled_for_route("direct"):
+        return None
+    refs = media_refs_for_event(event, max_refs=OCR_MAX_IMAGES_PER_MESSAGE, include_reply_media=True)
+    if not refs:
+        return None
+    scheduled_at = runtime_now()
+    task = asyncio.create_task(recognize_and_update_direct_context_for_event(dict(event), base_text=base_text, identity=dict(identity), scheduled_at=scheduled_at))
+    _ocr_direct_tasks.add(task)
+    task.add_done_callback(_consume_ocr_direct_task)
+    emit_perf_stat("ocr_direct_task_scheduled", group_id=group_id, media_count=len(refs))
+    return task
 
 
 async def recognize_and_update_context_for_event(event: dict[str, Any], *, base_text: str, identity: dict[str, str], scheduled_at: float | None = None) -> None:
@@ -2164,7 +2404,88 @@ def hermes_provider_for_group(group_id: int | None) -> str:
     return HERMES_PROVIDER
 
 
-def build_hermes_cmd(prompt: str, group_id: int | None = None, use_group_session: bool = True, model: str | None = None, provider: str | None = None) -> list[str]:
+def direct_fast_lane_configured() -> bool:
+    return any(
+        (
+            DIRECT_FAST_MODEL_ALIAS,
+            DIRECT_STRONG_MODEL_ALIAS,
+            DIRECT_CHAT_MODEL_PROVIDER,
+            DIRECT_CHAT_MODEL_BASE_URL,
+            DIRECT_CHAT_MODEL_API_KEY_ENV,
+            DIRECT_MODEL_TIMEOUT_SECONDS,
+            DIRECT_MAX_OUTPUT_CHARS,
+        )
+    )
+
+
+def direct_transport_override_configured() -> bool:
+    return bool(DIRECT_CHAT_MODEL_PROVIDER or DIRECT_CHAT_MODEL_BASE_URL or DIRECT_CHAT_MODEL_API_KEY_ENV)
+
+
+def direct_model_for_group(group_id: int | None, *, strong: bool = False) -> str:
+    if strong and DIRECT_STRONG_MODEL_ALIAS:
+        return DIRECT_STRONG_MODEL_ALIAS
+    if DIRECT_FAST_MODEL_ALIAS:
+        return DIRECT_FAST_MODEL_ALIAS
+    return hermes_model_for_group(group_id)
+
+
+def direct_intent_is_reply_to_bot(intent: dict[str, Any]) -> bool:
+    event = intent.get("event") if isinstance(intent.get("event"), dict) else {}
+    if not event:
+        return False
+    try:
+        return bool(is_reply_to_me(event))
+    except Exception:
+        return False
+
+
+def direct_intent_has_media(intent: dict[str, Any]) -> bool:
+    event = intent.get("event") if isinstance(intent.get("event"), dict) else {}
+    if not event:
+        return False
+    try:
+        return bool(media_refs_for_event(event, max_refs=1, include_reply_media=True))
+    except Exception:
+        return bool(media.has_processable_media(event.get("message")))
+
+
+def direct_media_context_available(media_context: Any) -> bool:
+    text = str(media_context or "").strip()
+    return bool(text and text != "（当前消息没有图片识别结果）")
+
+
+def direct_profile_for_intent(intent: dict[str, Any], *, media_context: Any = None) -> str:
+    trigger = str(intent.get("trigger") or "").strip().lower()
+    if trigger == "reply_to_bot" or direct_intent_is_reply_to_bot(intent):
+        return "strong"
+    if direct_intent_has_media(intent):
+        return "strong"
+    effective_media_context = intent.get("media_context") if media_context is None else media_context
+    if direct_media_context_available(effective_media_context):
+        return "strong"
+    return "standard"
+
+
+def direct_provider_for_group(group_id: int | None) -> str:
+    return DIRECT_CHAT_MODEL_PROVIDER or hermes_provider_for_group(group_id)
+
+
+def direct_model_timeout_seconds() -> int:
+    return DIRECT_MODEL_TIMEOUT_SECONDS or HERMES_TIMEOUT
+
+
+def direct_max_output_chars() -> int:
+    return DIRECT_MAX_OUTPUT_CHARS or MAX_REPLY_CHARS
+
+
+def build_hermes_cmd(
+    prompt: str,
+    group_id: int | None = None,
+    use_group_session: bool = True,
+    model: str | None = None,
+    provider: str | None = None,
+) -> list[str]:
     return hermes_runtime.build_hermes_cmd(
         prompt,
         group_id=group_id,
@@ -2180,18 +2501,33 @@ def build_hermes_cmd(prompt: str, group_id: int | None = None, use_group_session
     )
 
 
-def run_hermes_cmd(cmd: list[str], *, purpose: str = "unknown", group_id: int | None = None, use_group_session: bool = True, input_chars: int = 0) -> subprocess.CompletedProcess[str] | None:
+def run_hermes_cmd(
+    cmd: list[str],
+    *,
+    purpose: str = "unknown",
+    group_id: int | None = None,
+    use_group_session: bool = True,
+    input_chars: int = 0,
+    timeout_s: int | None = None,
+    model_configured: bool | None = None,
+    provider_configured: bool | None = None,
+) -> subprocess.CompletedProcess[str] | None:
+    effective_timeout_s = HERMES_TIMEOUT if timeout_s is None else max(1, int(timeout_s or HERMES_TIMEOUT))
+    effective_model_configured = bool("--model" in cmd) if model_configured is None else bool(model_configured)
+    effective_provider_configured = bool("--provider" in cmd) if provider_configured is None else bool(provider_configured)
     log({
         "type": "hermes_start",
         "purpose": purpose,
         "group_id": group_id,
         "use_group_session": use_group_session,
-        "has_model": "--model" in cmd,
-        "has_provider": "--provider" in cmd,
+        "has_model": effective_model_configured,
+        "has_provider": effective_provider_configured,
+        "timeout_s": effective_timeout_s,
     })
     start = time.monotonic()
+    phase = "fallback" if "fallback" in str(purpose or "").lower() else "primary"
     try:
-        result = subprocess.run(cmd, text=True, capture_output=True, timeout=HERMES_TIMEOUT, cwd=str(BASE_DIR))
+        result = subprocess.run(cmd, text=True, capture_output=True, timeout=effective_timeout_s, cwd=str(BASE_DIR))
         runtime_stat(
             "hermes_call",
             purpose=purpose,
@@ -2202,26 +2538,64 @@ def run_hermes_cmd(cmd: list[str], *, purpose: str = "unknown", group_id: int | 
             returncode=result.returncode,
             input_chars=input_chars,
             output_len=len(result.stdout or "") + len(result.stderr or ""),
-            timeout_s=HERMES_TIMEOUT,
-            model_configured=bool(hermes_model_for_group(group_id)),
-            provider_configured=bool(hermes_provider_for_group(group_id)),
+            timeout_s=effective_timeout_s,
+            model_configured=effective_model_configured,
+            provider_configured=effective_provider_configured,
+            transport="cli",
+            phase=phase,
         )
         increment_runtime_counter("hermes_calls")
         if result.returncode != 0:
             increment_runtime_counter("hermes_errors")
         return result
     except FileNotFoundError:
-        runtime_stat("hermes_call", purpose=purpose, group_id=group_id, use_group_session=use_group_session, duration_ms=runtime_stats.duration_ms(start), ok=False, error="FileNotFoundError", input_chars=input_chars, timeout_s=HERMES_TIMEOUT)
+        runtime_stat(
+            "hermes_call",
+            purpose=purpose,
+            group_id=group_id,
+            use_group_session=use_group_session,
+            duration_ms=runtime_stats.duration_ms(start),
+            ok=False,
+            error="FileNotFoundError",
+            input_chars=input_chars,
+            timeout_s=effective_timeout_s,
+            transport="cli",
+            phase=phase,
+        )
         increment_runtime_counter("hermes_calls")
         increment_runtime_counter("hermes_errors")
         log({"type": "hermes_error", "error": "FileNotFoundError", "hermes_bin_configured": bool(HERMES_BIN)})
     except subprocess.TimeoutExpired:
-        runtime_stat("hermes_call", purpose=purpose, group_id=group_id, use_group_session=use_group_session, duration_ms=runtime_stats.duration_ms(start), ok=False, error="TimeoutExpired", input_chars=input_chars, timeout_s=HERMES_TIMEOUT)
+        runtime_stat(
+            "hermes_call",
+            purpose=purpose,
+            group_id=group_id,
+            use_group_session=use_group_session,
+            duration_ms=runtime_stats.duration_ms(start),
+            ok=False,
+            error="TimeoutExpired",
+            input_chars=input_chars,
+            timeout_s=effective_timeout_s,
+            transport="cli",
+            phase=phase,
+        )
         increment_runtime_counter("hermes_calls")
         increment_runtime_counter("hermes_errors")
-        log({"type": "hermes_error", "error": "TimeoutExpired", "timeout": HERMES_TIMEOUT})
+        log({"type": "hermes_error", "error": "TimeoutExpired", "timeout": effective_timeout_s})
     except Exception as exc:
-        runtime_stat("hermes_call", purpose=purpose, group_id=group_id, use_group_session=use_group_session, duration_ms=runtime_stats.duration_ms(start), ok=False, error=type(exc).__name__, input_chars=input_chars, timeout_s=HERMES_TIMEOUT)
+        runtime_stat(
+            "hermes_call",
+            purpose=purpose,
+            group_id=group_id,
+            use_group_session=use_group_session,
+            duration_ms=runtime_stats.duration_ms(start),
+            ok=False,
+            error=type(exc).__name__,
+            input_chars=input_chars,
+            timeout_s=effective_timeout_s,
+            transport="cli",
+            phase=phase,
+        )
         increment_runtime_counter("hermes_calls")
         increment_runtime_counter("hermes_errors")
         log({"type": "hermes_error", "error": type(exc).__name__})
@@ -2344,6 +2718,22 @@ def primary_text_http_config_for_group(group_id: int | None = None) -> dict[str,
     )
 
 
+def direct_text_http_config_for_group(group_id: int | None = None, *, strong: bool = False) -> dict[str, str] | None:
+    if direct_transport_override_configured():
+        return text_model_http_config(
+            model=direct_model_for_group(group_id, strong=strong),
+            provider=direct_provider_for_group(group_id),
+            base_url=DIRECT_CHAT_MODEL_BASE_URL,
+            api_key_env=DIRECT_CHAT_MODEL_API_KEY_ENV,
+        )
+    return text_model_http_config(
+        model=direct_model_for_group(group_id, strong=strong),
+        provider=hermes_provider_for_group(group_id),
+        base_url=HERMES_PROVIDER_BASE_URL,
+        api_key_env=HERMES_API_KEY_ENV,
+    )
+
+
 def fallback_text_http_config() -> dict[str, str] | None:
     return text_model_http_config(
         model=HERMES_FALLBACK_MODEL,
@@ -2353,6 +2743,25 @@ def fallback_text_http_config() -> dict[str, str] | None:
     )
 
 
+def text_http_client() -> httpx.Client:
+    global _text_http_client
+    if _text_http_client is None or _text_http_client.is_closed:
+        _text_http_client = httpx.Client(trust_env=False)
+    return _text_http_client
+
+
+def close_text_http_client() -> None:
+    global _text_http_client
+    client = _text_http_client
+    _text_http_client = None
+    if client is None:
+        return
+    try:
+        client.close()
+    except Exception as exc:
+        log({"type": "text_http_client_close_error", "error": type(exc).__name__})
+
+
 def run_text_http_result(
     prompt: str,
     *,
@@ -2360,7 +2769,11 @@ def run_text_http_result(
     group_id: int | None = None,
     purpose: str = "unknown",
     phase: str = "primary",
+    timeout_s: int | None = None,
+    max_reply_chars: int | None = None,
 ) -> dict[str, Any]:
+    effective_timeout_s = HERMES_TIMEOUT if timeout_s is None else max(1, int(timeout_s or HERMES_TIMEOUT))
+    effective_max_reply_chars = MAX_REPLY_CHARS if max_reply_chars is None else max(1, int(max_reply_chars or MAX_REPLY_CHARS))
     start = time.monotonic()
     log({
         "type": "text_http_start",
@@ -2371,14 +2784,17 @@ def run_text_http_result(
         "has_provider": bool(config.get("provider")),
         "has_base_url": bool(config.get("base_url")),
         "has_api_key_env": bool(config.get("api_key_env")),
+        "timeout_s": effective_timeout_s,
+        "output_cap_chars": effective_max_reply_chars,
     })
     result = hermes_runtime.run_openai_compatible_chat_completion(
         prompt,
         base_url=config.get("base_url", ""),
         model=config.get("model", ""),
         api_key_env=config.get("api_key_env", ""),
-        timeout=HERMES_TIMEOUT,
-        max_reply_chars=MAX_REPLY_CHARS,
+        timeout=effective_timeout_s,
+        max_reply_chars=effective_max_reply_chars,
+        client=text_http_client(),
     )
     duration = runtime_stats.duration_ms(start)
     ok = bool(result.get("ok") and str(result.get("text") or "").strip())
@@ -2392,7 +2808,8 @@ def run_text_http_result(
         error="" if ok else str(result.get("reason") or "unknown"),
         input_chars=len(prompt),
         output_len=len(str(result.get("text") or "")),
-        timeout_s=HERMES_TIMEOUT,
+        timeout_s=effective_timeout_s,
+        output_cap_chars=effective_max_reply_chars,
         model_configured=bool(config.get("model")),
         provider_configured=bool(config.get("provider")),
         transport="http",
@@ -2414,12 +2831,24 @@ def run_text_http_result(
     return result
 
 
-def hermes_fallback_available(group_id: int | None = None) -> bool:
+def hermes_fallback_available(
+    group_id: int | None = None,
+    *,
+    active_model: str | None = None,
+    active_provider: str | None = None,
+    active_base_url: str | None = None,
+    active_api_key_env: str | None = None,
+) -> bool:
     if not HERMES_FALLBACK_ENABLED:
         return False
     if not (HERMES_FALLBACK_MODEL or HERMES_FALLBACK_PROVIDER):
         return False
-    active = _model_provider_key(hermes_model_for_group(group_id), hermes_provider_for_group(group_id), HERMES_PROVIDER_BASE_URL, HERMES_API_KEY_ENV)
+    active = _model_provider_key(
+        hermes_model_for_group(group_id) if active_model is None else active_model,
+        hermes_provider_for_group(group_id) if active_provider is None else active_provider,
+        HERMES_PROVIDER_BASE_URL if active_base_url is None else active_base_url,
+        HERMES_API_KEY_ENV if active_api_key_env is None else active_api_key_env,
+    )
     fallback = _model_provider_key(HERMES_FALLBACK_MODEL, HERMES_FALLBACK_PROVIDER, HERMES_FALLBACK_PROVIDER_BASE_URL, HERMES_FALLBACK_API_KEY_ENV)
     return fallback != active
 
@@ -2467,8 +2896,26 @@ def _hermes_result_needs_fallback(result: dict[str, Any]) -> bool:
     return not result.get("ok") or not str(result.get("text") or "").strip()
 
 
-def run_hermes_fallback_result(prompt: str, group_id: int | None = None, *, purpose: str = "unknown", primary_reason: str = "") -> dict[str, Any] | None:
-    if not hermes_fallback_available(group_id):
+def run_hermes_fallback_result(
+    prompt: str,
+    group_id: int | None = None,
+    *,
+    purpose: str = "unknown",
+    primary_reason: str = "",
+    active_model: str | None = None,
+    active_provider: str | None = None,
+    active_base_url: str | None = None,
+    active_api_key_env: str | None = None,
+    timeout_s: int | None = None,
+    max_reply_chars: int | None = None,
+) -> dict[str, Any] | None:
+    if not hermes_fallback_available(
+        group_id,
+        active_model=active_model,
+        active_provider=active_provider,
+        active_base_url=active_base_url,
+        active_api_key_env=active_api_key_env,
+    ):
         return None
     fallback_purpose = f"{purpose}_fallback" if purpose else "fallback"
     log({"type": "hermes_fallback_attempt", "group_id": group_id, "purpose": purpose, "primary_reason": primary_reason or "unknown"})
@@ -2480,6 +2927,8 @@ def run_hermes_fallback_result(prompt: str, group_id: int | None = None, *, purp
             group_id=group_id,
             purpose=fallback_purpose,
             phase="fallback",
+            timeout_s=timeout_s,
+            max_reply_chars=max_reply_chars,
         )
     else:
         p = run_hermes_cmd(
@@ -2494,6 +2943,7 @@ def run_hermes_fallback_result(prompt: str, group_id: int | None = None, *, purp
             group_id=group_id,
             use_group_session=False,
             input_chars=len(prompt),
+            timeout_s=timeout_s,
         )
         result = _hermes_raw_result_from_process(
             p,
@@ -2545,6 +2995,81 @@ def run_hermes_raw(prompt: str, group_id: int | None = None, use_group_session: 
     return str(run_hermes_raw_result(prompt, group_id, use_group_session, purpose=purpose).get("text") or "")
 
 
+def run_direct_hermes_raw_result(
+    prompt: str,
+    group_id: int | None = None,
+    *,
+    use_group_session: bool = True,
+    purpose: str = "direct_reply",
+    strong: bool = False,
+) -> dict[str, Any]:
+    timeout_s = direct_model_timeout_seconds()
+    max_output_chars = direct_max_output_chars()
+    http_config = direct_text_http_config_for_group(group_id, strong=strong)
+    if http_config is not None:
+        primary = run_text_http_result(
+            prompt,
+            config=http_config,
+            group_id=group_id,
+            purpose=purpose,
+            phase="primary",
+            timeout_s=timeout_s,
+            max_reply_chars=max_output_chars,
+        )
+        active_model = http_config.get("model") or ""
+        active_provider = http_config.get("provider") or ""
+        active_base_url = http_config.get("base_url") or ""
+        active_api_key_env = http_config.get("api_key_env") or ""
+    else:
+        model = direct_model_for_group(group_id, strong=strong)
+        provider = direct_provider_for_group(group_id)
+        if use_group_session:
+            compact_group_hermes_session_if_needed(group_id)
+        p = run_hermes_cmd(
+            build_hermes_cmd(
+                prompt,
+                group_id=group_id,
+                use_group_session=use_group_session,
+                model=model,
+                provider=provider,
+            ),
+            purpose=purpose,
+            group_id=group_id,
+            use_group_session=use_group_session,
+            input_chars=len(prompt),
+            timeout_s=timeout_s,
+            model_configured=bool(model),
+            provider_configured=bool(provider),
+        )
+        primary = _hermes_raw_result_from_process(
+            p,
+            prompt=prompt,
+            group_id=group_id,
+            use_group_session=use_group_session,
+            allow_session_bootstrap=True,
+        )
+        active_model = model
+        active_provider = provider
+        active_base_url = ""
+        active_api_key_env = ""
+    if _hermes_result_needs_fallback(primary):
+        fallback = run_hermes_fallback_result(
+            prompt,
+            group_id,
+            purpose=purpose,
+            primary_reason=str(primary.get("reason") or "unknown"),
+            active_model=active_model,
+            active_provider=active_provider,
+            active_base_url=active_base_url,
+            active_api_key_env=active_api_key_env,
+            timeout_s=timeout_s,
+            max_reply_chars=max_output_chars,
+        )
+        if fallback is not None:
+            return fallback
+    return primary
+
+
 def run_hermes(prompt: str, group_id: int | None = None, use_group_session: bool = True, purpose: str = "unknown") -> str:
     raw = run_hermes_raw(prompt, group_id, use_group_session, purpose=purpose)
     if not raw:
@@ -2553,7 +3078,25 @@ def run_hermes(prompt: str, group_id: int | None = None, use_group_session: bool
     return finalize_reply(raw)
 
 
-def run_direct_hermes_raw(prompt: str, group_id: int | None = None, *, use_group_session: bool = True, purpose: str = "direct_reply") -> str:
+def run_direct_hermes_raw(
+    prompt: str,
+    group_id: int | None = None,
+    *,
+    use_group_session: bool = True,
+    purpose: str = "direct_reply",
+    strong: bool = False,
+) -> str:
+    if direct_fast_lane_configured() or (strong and DIRECT_STRONG_MODEL_ALIAS):
+        return str(
+            run_direct_hermes_raw_result(
+                prompt,
+                group_id,
+                use_group_session=use_group_session,
+                purpose=purpose,
+                strong=strong,
+            ).get("text")
+            or ""
+        )
     try:
         return run_hermes_raw(prompt, group_id, use_group_session=use_group_session, purpose=purpose)
     except TypeError as exc:
@@ -2570,16 +3113,16 @@ def direct_retry_prompt(prompt: str) -> str:
     )
 
 
-def generate_direct_reply(prompt: str, group_id: int | None = None) -> dict[str, Any]:
-    raw = run_direct_hermes_raw(prompt, group_id, purpose="direct_reply")
+def generate_direct_reply(prompt: str, group_id: int | None = None, *, strong: bool = False) -> dict[str, Any]:
+    raw = run_direct_hermes_raw(prompt, group_id, purpose="direct_reply", strong=strong)
     if not raw:
         log({"type": "direct_reply_empty_retry", "group_id": group_id, "retry_use_group_session": False})
-        raw = run_direct_hermes_raw(direct_retry_prompt(prompt), group_id, use_group_session=False, purpose="direct_reply_retry")
+        raw = run_direct_hermes_raw(direct_retry_prompt(prompt), group_id, use_group_session=False, purpose="direct_reply_retry", strong=strong)
     if not raw:
         reply = pick_template("hermes_error", str(group_id or ""))
         log({"type": "direct_reply_generation_failed", "group_id": group_id, "reason": "direct_hermes_empty"})
         return {"ok": False, "generation_failed": True, "reason": "direct_hermes_empty", "reply": reply}
-    return {"ok": True, "generation_failed": False, "reply": finalize_reply(raw)}
+    return {"ok": True, "generation_failed": False, "reply": finalize_direct_reply(raw)}
 
 
 def direct_failure_notice_for_event(event: dict[str, Any]) -> str:
@@ -2797,19 +3340,66 @@ def record_direct_reply_runtime_result(group_id: int, event: dict[str, Any], *, 
         generation_failed=bool(result.get("generation_failed")),
         send_failed=result.get("error") == "send_failed",
         failure_notice_sent=bool(result.get("failure_notice_sent")),
+        ignored=result.get("ignored") or "",
+        suppressed_duplicate=result.get("ignored") == "duplicate_outbound",
         output_len=output_len,
         queue_remaining=result.get("queue_remaining", reply_queue_size(group_id)),
+        direct_model_profile=runtime_stats.normalize_label(perf.get("direct_model_profile") or "standard", default="standard", max_len=16),
+        direct_model_override=bool(perf.get("direct_model_override")),
+        coalesced_count=perf.get("coalesced_count", 1),
+        coalesce_window_ms=perf.get("coalesce_window_ms", 0),
         queue_wait_ms=perf.get("queue_wait_ms", 0),
         prompt_build_ms=perf.get("prompt_build_ms", 0),
         generation_ms=perf.get("generation_ms", 0),
         e2e_ms=perf.get("e2e_ms", 0),
         duration_ms=runtime_stats.duration_ms(duration_start),
     )
+
+
+async def wait_direct_ocr_task(queued_intent: dict[str, Any], *, wait_ms: int) -> dict[str, Any]:
+    task = queued_intent.get("ocr_task")
+    if not isinstance(task, asyncio.Task):
+        return {
+            "media_context": str(queued_intent.get("media_context") or "（当前消息没有图片识别结果）"),
+            "included": False,
+            "status": "not_scheduled",
+            "wait_ms": 0,
+        }
+    start = runtime_now()
+    status = "completed"
+    try:
+        if task.done():
+            media_data = task.result()
+        else:
+            try:
+                media_data = await asyncio.wait_for(asyncio.shield(task), timeout=max(0, wait_ms) / 1000.0)
+            except asyncio.TimeoutError:
+                status = "timeout"
+                media_data = None
+        media_context = str((media_data or {}).get("media_context") or queued_intent.get("media_context") or "（当前消息没有图片识别结果）")
+    except Exception as exc:
+        status = type(exc).__name__
+        media_context = str(queued_intent.get("media_context") or "（当前消息没有图片识别结果）")
+    included = status == "completed" and media_context != "（当前消息没有图片识别结果）"
+    actual_wait_ms = runtime_elapsed_ms(start)
+    emit_perf_stat(
+        "ocr_direct_prompt_wait",
+        group_id=group_id_from_event(queued_intent.get("event") or {}),
+        wait_ms=actual_wait_ms,
+        timeout_ms=max(0, wait_ms),
+        included=included,
+        status=runtime_stats.normalize_label(status),
+        pending=not task.done(),
+    )
+    return {"media_context": media_context, "included": included, "status": status, "wait_ms": actual_wait_ms}
+
 async def process_direct_reply_intent(group_id: int, queued_intent: dict[str, Any]) -> dict[str, Any]:
     global _last_reply_at
     event = queued_intent.get("event") or {}
     user_text = str(queued_intent.get("user_text") or "")
+    prompt_user_text = reply_queue.coalesced_user_text_for_prompt(queued_intent, default=user_text)
     media_context = str(queued_intent.get("media_context") or "（当前消息没有图片识别结果）")
+    ocr_prompt_wait: dict[str, Any] = {"included": False, "status": "not_scheduled", "wait_ms": 0}
     trigger = queued_intent.get("trigger") or "at"
     pending_remembered = False
     start = runtime_now()
@@ -2818,7 +3408,13 @@ async def process_direct_reply_intent(group_id: int, queued_intent: dict[str, An
     event_received_at = queued_intent.get("_perf_event_received_at")
     prompt_build_ms = 0
     generation_ms = 0
-    perf: dict[str, Any] = {"interaction_id": interaction_id, "queue_wait_ms": queue_wait_ms, "event_received_at": event_received_at}
+    perf: dict[str, Any] = {
+        "interaction_id": interaction_id,
+        "queue_wait_ms": queue_wait_ms,
+        "event_received_at": event_received_at,
+        "coalesced_count": reply_queue.coalesced_count(queued_intent),
+        "coalesce_window_ms": int(queued_intent.get("_coalesced_window_ms") or 0),
+    }
     try:
         remember_bot_pending_reply(group_id, user_text, event.get("self_id"))
         pending_remembered = True
@@ -2832,10 +3428,20 @@ async def process_direct_reply_intent(group_id: int, queued_intent: dict[str, An
             queue_size=reply_queue_size(group_id),
         )
         prompt_start = runtime_now()
-        prompt = build_prompt(event, user_text, media_context if OCR_INCLUDE_IN_PROMPT else "（当前消息没有图片识别结果）")
+        if OCR_INCLUDE_IN_PROMPT:
+            ocr_prompt_wait = await wait_direct_ocr_task(queued_intent, wait_ms=OCR_DIRECT_PROMPT_WAIT_MS)
+            media_context = str(ocr_prompt_wait.get("media_context") or media_context)
+            prompt_media_context = media_context
+        else:
+            prompt_media_context = "（当前消息没有图片识别结果）"
+        prompt = build_prompt(event, prompt_user_text, prompt_media_context)
         prompt_build_ms = runtime_elapsed_ms(prompt_start)
+        direct_model_profile = direct_profile_for_intent(queued_intent, media_context=media_context)
+        direct_model_strong = direct_model_profile == "strong" and bool(DIRECT_STRONG_MODEL_ALIAS)
+        perf["direct_model_profile"] = direct_model_profile
+        perf["direct_model_override"] = direct_model_strong
         generation_start = runtime_now()
-        generated = await asyncio.to_thread(generate_direct_reply, prompt, group_id)
+        generated = await asyncio.to_thread(generate_direct_reply, prompt, group_id, strong=direct_model_strong)
         generation_ms = runtime_elapsed_ms(generation_start)
     except Exception as exc:
         log({"type": "direct_reply_error", "group_id": group_id, "user_id": event.get("user_id"), "error": type(exc).__name__})
@@ -2962,7 +3568,7 @@ def record_proactive_runtime_result(group_id: int, event: dict[str, Any], proact
     interaction_id = str(perf.get("interaction_id") or "")
     if result.get("proactive_replied"):
         increment_runtime_counter("proactive_replies_sent")
-    elif result.get("ignored") in {"proactive_model_skipped", "proactive_revalidated_blocked", "duplicate_outbound"}:
+    elif result.get("ignored") in {"proactive_model_skipped", "proactive_revalidated_blocked", "proactive_revalidated_score_low", "direct_pending", "stale", "duplicate_outbound"}:
         increment_runtime_counter("proactive_skipped")
     if suppressed_duplicate:
         pass
@@ -2973,6 +3579,8 @@ def record_proactive_runtime_result(group_id: int, event: dict[str, Any], proact
         ok=bool(result.get("ok")),
         sent=bool(result.get("proactive_replied")),
         skipped=bool(result.get("ignored")),
+        ignored=result.get("ignored") or "",
+        blocked=result.get("blocked") or "",
         suppressed_duplicate=suppressed_duplicate,
         output_len=output_len,
         score=proactive_data.get("score"),
@@ -3047,6 +3655,26 @@ def complete_proactive_skip(
     return result
 
 
+def proactive_intent_age_seconds(queued_intent: dict[str, Any], *, now: float | None = None) -> float:
+    enqueued_at = queued_intent.get("_perf_enqueued_at")
+    if enqueued_at is None:
+        return 0.0
+    current = runtime_now() if now is None else now
+    try:
+        return max(0.0, float(current) - float(enqueued_at))
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def proactive_queue_skip_reason(group_id: int, queued_intent: dict[str, Any], *, now: float | None = None) -> str:
+    if reply_queue_size_by_kind(group_id, "direct") > 0:
+        return "direct_pending"
+    max_age = max(0.0, float(PROACTIVE_QUEUE_MAX_AGE_SECONDS or 0.0))
+    if max_age > 0 and proactive_intent_age_seconds(queued_intent, now=now) > max_age:
+        return "stale"
+    return ""
+
+
 async def process_proactive_reply_intent(group_id: int, queued_intent: dict[str, Any]) -> dict[str, Any]:
     global _last_reply_at
     event = queued_intent.get("event") or {}
@@ -3058,12 +3686,25 @@ async def process_proactive_reply_intent(group_id: int, queued_intent: dict[str,
     generation_ms = 0
     perf: dict[str, Any] = {"interaction_id": interaction_id, "queue_wait_ms": queue_wait_ms, "event_received_at": event_received_at}
     perf["e2e_ms"] = interaction_e2e_ms(interaction_id, event_received_at)
-    revalidate_block = proactive_block_reason(proactive_state_for_group(group_id), time.time(), group_id)
-    if revalidate_block:
+    queue_skip_reason = proactive_queue_skip_reason(group_id, queued_intent)
+    if queue_skip_reason:
         return complete_proactive_skip(
             group_id,
             event,
             proactive,
+            result_reason=queue_skip_reason,
+            analysis_reason=queue_skip_reason,
+            phase="queue_policy",
+            duration_start=start,
+            perf=perf,
+        )
+    revalidated = revalidate_proactive_score(group_id, proactive, time.time())
+    revalidate_block = str(revalidated.get("blocked") or "")
+    if revalidate_block:
+        return complete_proactive_skip(
+            group_id,
+            event,
+            revalidated,
             result_reason="proactive_revalidated_blocked",
             analysis_reason="dequeue_revalidate",
             blocked=revalidate_block,
@@ -3071,6 +3712,18 @@ async def process_proactive_reply_intent(group_id: int, queued_intent: dict[str,
             duration_start=start,
             perf=perf,
         )
+    if not revalidated.get("should_trigger"):
+        return complete_proactive_skip(
+            group_id,
+            event,
+            revalidated,
+            result_reason="proactive_revalidated_score_low",
+            analysis_reason="dequeue_revalidate",
+            phase="dequeue_revalidate",
+            duration_start=start,
+            perf=perf,
+        )
+    proactive = revalidated
     content_analysis_log(
         "proactive_generation_start",
         group_id,
@@ -3158,8 +3811,18 @@ async def process_proactive_reply_intent(group_id: int, queued_intent: dict[str,
     )
 
 
+async def wait_direct_coalesce_window(group_id: int) -> None:
+    window_ms = max(0, int(DIRECT_COALESCE_WINDOW_MS or 0))
+    if window_ms <= 0:
+        return
+    if reply_queue_size_by_kind(group_id, "direct") <= 0:
+        return
+    await asyncio.sleep(window_ms / 1000.0)
+
+
 async def process_one_reply_intent(group_id: int) -> dict[str, Any]:
     async with reply_lock_for_group(group_id):
+        await wait_direct_coalesce_window(group_id)
         queued_intent = dequeue_reply_intent(group_id)
         if queued_intent is None:
             return {"ok": True, "ignored": "reply_queue_empty"}
@@ -3167,12 +3830,16 @@ async def process_one_reply_intent(group_id: int) -> dict[str, Any]:
         kind = str(queued_intent.get("kind") or "")
         interaction_id = str(queued_intent.get("_perf_interaction_id") or "")
         queue_wait_ms = runtime_elapsed_ms(queued_intent.get("_perf_enqueued_at"))
+        queued_intent["_reply_started"] = True
+        queued_intent["_direct_reply_started"] = kind == "direct"
         queued_intent["_perf_queue_wait_ms"] = queue_wait_ms
         emit_perf_stat(
             "reply_intent_dequeued",
             group_id=group_id,
             interaction_id=interaction_id,
             kind=kind,
+            coalesced_count=reply_queue.coalesced_count(queued_intent),
+            coalesce_window_ms=int(queued_intent.get("_coalesced_window_ms") or 0),
             queue_wait_ms=queue_wait_ms,
             direct_queue_size=reply_queue_size_by_kind(group_id, "direct"),
             proactive_queue_size=reply_queue_size_by_kind(group_id, "proactive"),
@@ -3271,6 +3938,24 @@ async def wait_reply_worker(group_id: int) -> None:
         await task
 
 
+async def wait_context_compaction_tasks(group_id: int | None = None) -> None:
+    tasks = [
+        task
+        for task_group_id, task in list(_context_compaction_tasks_by_group.items())
+        if group_id is None or task_group_id == group_id
+    ]
+    if not tasks:
+        return
+    await asyncio.gather(*tasks, return_exceptions=True)
+
+
+async def wait_ocr_direct_tasks(group_id: int | None = None) -> None:
+    tasks = list(_ocr_direct_tasks)
+    if not tasks:
+        return
+    await asyncio.gather(*tasks, return_exceptions=True)
+
+
 async def wait_ocr_context_tasks(group_id: int | None = None) -> None:
     tasks = list(_ocr_context_tasks)
     if not tasks:
@@ -3278,7 +3963,17 @@ async def wait_ocr_context_tasks(group_id: int | None = None) -> None:
     await asyncio.gather(*tasks, return_exceptions=True)
 
 
-app = FastAPI(title="QQ Hermes Bridge")
+@asynccontextmanager
+async def app_lifespan(app: FastAPI):
+    try:
+        yield
+    finally:
+        close_text_http_client()
+
+
+app = FastAPI(title="QQ Hermes Bridge", lifespan=app_lifespan)
+
+
 _last_reply_at = 0.0
 _lock = asyncio.Lock()
 _outbound_lock = asyncio.Lock()
@@ -3296,6 +3991,7 @@ runtime_stat(
     context_persist_enabled=CONTEXT_PERSIST_ENABLED,
     proactive_enabled=PROACTIVE_ENABLED,
     group_sessions_enabled=HERMES_GROUP_SESSIONS_ENABLED,
+    direct_coalesce_window_ms=DIRECT_COALESCE_WINDOW_MS,
 )
 
 
@@ -3337,6 +4033,8 @@ def _admin_group_ids(selected_group_id: int | None = None) -> list[int]:
     ids.update(key for key in _recent_messages_by_group.keys() if isinstance(key, int))
     ids.update(key for key in _context_summaries_by_group.keys() if isinstance(key, int))
     ids.update(key for key in _proactive_state_by_group.keys() if isinstance(key, int))
+    ids.update(key for key in _recent_activity_by_group.keys() if isinstance(key, int))
+    ids.update(key for key in _proactive_reply_times_by_group.keys() if isinstance(key, int))
     ids.update(key for key in HERMES_MODEL_BY_GROUP.keys() if isinstance(key, int))
     ids.update(key for key in HERMES_PROVIDER_BY_GROUP.keys() if isinstance(key, int))
     for key in _reply_queue_by_group.keys():
@@ -3351,6 +4049,131 @@ def _admin_context_stats_for_group(group_id: int) -> dict[str, Any]:
         messages = list(_recent_messages)
     summaries = list(_context_summaries_by_group.get(group_id) or ())
     return admin_view.summarize_context(messages, summaries)
+
+
+def _admin_float(value: Any, default: float = 0.0) -> float:
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return default
+    if number != number or number in (float("inf"), float("-inf")):
+        return default
+    return number
+
+
+def _admin_int(value: Any, default: int = 0) -> int:
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return default
+
+
+def _admin_proactive_threshold_for_group(group_id: int) -> tuple[float, str]:
+    if group_id in PROACTIVE_TRIGGER_THRESHOLDS_BY_GROUP:
+        return _admin_float(PROACTIVE_TRIGGER_THRESHOLDS_BY_GROUP.get(group_id), PROACTIVE_TRIGGER_THRESHOLD), "group_override"
+    return _admin_float(PROACTIVE_TRIGGER_THRESHOLD, 70.0), "default"
+
+
+def _admin_proactive_rate_status(group_id: int, now: float) -> dict[str, Any]:
+    cutoff = now - PROACTIVE_RATE_LIMIT_WINDOW_SECONDS
+    recent: list[float] = []
+    for ts in list(_proactive_reply_times_by_group.get(group_id) or ()):  # copy only; admin reads should not requeue anything
+        value = _admin_float(ts, -1.0)
+        if value > cutoff:
+            recent.append(value)
+    recent.sort()
+    blocked = len(recent) >= PROACTIVE_RATE_LIMIT_MAX_REPLIES
+    reset_seconds = 0
+    if blocked and recent:
+        reset_seconds = max(0, int(round(PROACTIVE_RATE_LIMIT_WINDOW_SECONDS - (now - recent[0]))))
+    return {
+        "window_seconds": PROACTIVE_RATE_LIMIT_WINDOW_SECONDS,
+        "max_replies": PROACTIVE_RATE_LIMIT_MAX_REPLIES,
+        "recent_replies": len(recent),
+        "blocked": blocked,
+        "reset_seconds": reset_seconds,
+    }
+
+
+def _admin_proactive_state_for_group(group_id: int, now: float) -> dict[str, Any]:
+    activity = proactive_current_activity(group_id, now)
+    activity_summary = proactive.activity_window_summary(activity)
+    activity_summary["window_seconds"] = PROACTIVE_BURST_WINDOW_SECONDS
+    heat, heat_reasons = proactive.activity_heat_score(activity)
+    current_text = str(activity[-1].get("text") or "") if activity else ""
+    opening, opening_reasons = proactive.natural_opening_score(
+        current_text,
+        activity,
+        topic_keywords=PROACTIVE_TOPIC_KEYWORDS,
+        light_keywords=PROACTIVE_LIGHT_KEYWORDS,
+    )
+    score = max(0.0, min(100.0, heat + opening))
+    reasons = [*heat_reasons, *opening_reasons]
+    if is_night_time(now):
+        score = max(0.0, min(100.0, score * PROACTIVE_NIGHT_SCORE_MULTIPLIER))
+        reasons.append("night_scaled")
+
+    state = _proactive_state_by_group.get(group_id, {})
+    threshold, threshold_source = _admin_proactive_threshold_for_group(group_id)
+    rate_status = _admin_proactive_rate_status(group_id, now)
+    daily_count = _admin_int(state.get("daily_count"), 0)
+    daily_remaining = None if PROACTIVE_DAILY_LIMIT_PER_GROUP <= 0 else max(0, PROACTIVE_DAILY_LIMIT_PER_GROUP - daily_count)
+    sensitive_until = _admin_float(state.get("sensitive_until"), 0.0)
+    sensitive_remaining = max(0, int(round(sensitive_until - now))) if sensitive_until else 0
+    last_proactive_at = _admin_float(state.get("last_proactive_at"), 0.0)
+    cooldown_remaining = 0
+    if last_proactive_at:
+        cooldown_remaining = max(0, int(round(PROACTIVE_GROUP_COOLDOWN_SECONDS - (now - last_proactive_at))))
+
+    blocked = ""
+    if not PROACTIVE_ENABLED or group_id not in ALLOWED_GROUP_IDS:
+        blocked = "disabled_or_ineligible"
+    elif rate_status.get("blocked"):
+        blocked = "rate_limit"
+    elif PROACTIVE_DAILY_LIMIT_PER_GROUP > 0 and daily_count >= PROACTIVE_DAILY_LIMIT_PER_GROUP:
+        blocked = "daily_limit"
+    elif sensitive_remaining > 0:
+        blocked = "sensitive_cooldown"
+    elif cooldown_remaining > 0:
+        blocked = "group_cooldown"
+
+    return admin_view.safe_proactive_state(
+        state,
+        now=now,
+        scoring={
+            "score": score,
+            "heat": heat,
+            "opening_score": opening,
+            "threshold": threshold,
+            "threshold_source": threshold_source,
+            "should_trigger": bool(not blocked and score >= threshold),
+            "blocked": blocked,
+            "direct_name_trigger": any(str(reason).startswith("name:") for reason in reasons),
+            "reasons": reasons,
+        },
+        activity=activity_summary,
+        limits={
+            "group_cooldown_seconds": PROACTIVE_GROUP_COOLDOWN_SECONDS,
+            "group_cooldown_remaining_seconds": cooldown_remaining,
+            "daily_limit_per_group": PROACTIVE_DAILY_LIMIT_PER_GROUP,
+            "daily_remaining": daily_remaining,
+            "rate_limit_window_seconds": rate_status.get("window_seconds"),
+            "rate_limit_max_replies": rate_status.get("max_replies"),
+            "rate_limit_recent_replies": rate_status.get("recent_replies"),
+            "rate_limit_reset_seconds": rate_status.get("reset_seconds"),
+            "sensitive_cooldown_remaining_seconds": sensitive_remaining,
+        },
+        score_model={
+            "enabled": PROACTIVE_ENABLED,
+            "mode": "bounded_sliding_window",
+            "scale_min": 0.0,
+            "scale_max": 100.0,
+            "window_seconds": PROACTIVE_BURST_WINDOW_SECONDS,
+            "threshold": threshold,
+            "default_threshold": PROACTIVE_TRIGGER_THRESHOLD,
+            "threshold_source": threshold_source,
+        },
+    )
 
 
 def _admin_group_state(group_id: int, now: float) -> dict[str, Any]:
@@ -3376,7 +4199,11 @@ def _admin_group_state(group_id: int, now: float) -> dict[str, Any]:
         "worker_running": bool(worker is not None and not worker.done()),
         "direct_inflight": group_id in _direct_reply_inflight_groups,
         "proactive_inflight": group_id in _proactive_inflight_groups,
-        "proactive": admin_view.safe_proactive_state(_proactive_state_by_group.get(group_id, {}), now=now),
+        "proactive": {
+            **_admin_proactive_state_for_group(group_id, now),
+            "queue_size": proactive_queue_size,
+            "inflight": group_id in _proactive_inflight_groups,
+        },
     }
 
 
@@ -3405,6 +4232,7 @@ def build_admin_state(group_id: int | None = None) -> dict[str, Any]:
     selected_group_id = group_id if group_id is not None else TARGET_GROUP_ID
     now = time.time()
     group_states = [_admin_group_state(gid, now) for gid in _admin_group_ids(selected_group_id)]
+    selected_proactive = next((group.get("proactive") for group in group_states if group.get("group_id") == selected_group_id), _admin_proactive_state_for_group(selected_group_id, now))
     selected_context_stats = _admin_context_stats_for_group(selected_group_id)
     primary_model = admin_view.safe_model_provider_details(HERMES_MODEL, HERMES_PROVIDER)
     selected_model = admin_view.safe_model_provider_details(
@@ -3412,6 +4240,10 @@ def build_admin_state(group_id: int | None = None) -> dict[str, Any]:
         hermes_provider_for_group(selected_group_id),
     )
     fallback_model = admin_view.safe_model_provider_details(HERMES_FALLBACK_MODEL, HERMES_FALLBACK_PROVIDER)
+    direct_strong_model = admin_view.safe_model_provider_details(
+        DIRECT_STRONG_MODEL_ALIAS,
+        direct_provider_for_group(selected_group_id),
+    )
     ocr_primary = admin_view.safe_model_provider_details(OCR_MODEL or HERMES_MODEL, OCR_PROVIDER)
     ocr_fallback = admin_view.safe_model_provider_details(OCR_FALLBACK_MODEL, OCR_FALLBACK_PROVIDER)
     queue_total = sum(int((group.get("queues") or {}).get("total") or 0) for group in group_states)
@@ -3422,6 +4254,8 @@ def build_admin_state(group_id: int | None = None) -> dict[str, Any]:
         max_prompt_chars=MAX_PROMPT_CHARS,
         ocr_enabled=OCR_ENABLED,
         self_learning_enabled=SELF_LEARNING_ENABLED and SELF_LEARNING_INJECT_ENABLED,
+        direct_prompt_profile=DIRECT_PROMPT_PROFILE,
+        direct_prompt_total_budget_chars=DIRECT_PROMPT_TOTAL_BUDGET_CHARS,
     )
     active_ocr_inflight_count = sum(1 for task in _ocr_inflight.values() if task is not None and not task.done())
     active_ocr_context_tasks = sum(1 for task in _ocr_context_tasks if task is not None and not task.done())
@@ -3459,6 +4293,12 @@ def build_admin_state(group_id: int | None = None) -> dict[str, Any]:
                 "enabled": HERMES_FALLBACK_ENABLED,
                 "available_for_selected_group": hermes_fallback_available(selected_group_id),
             },
+            "direct_strong": {
+                **direct_strong_model,
+                "enabled": bool(DIRECT_STRONG_MODEL_ALIAS),
+                "model_only_override": True,
+                "triggered_by": ["reply_to_bot", "media_context"],
+            },
             "group_model_override_count": len(HERMES_MODEL_BY_GROUP),
             "group_provider_override_count": len(HERMES_PROVIDER_BY_GROUP),
             "group_sessions_enabled": HERMES_GROUP_SESSIONS_ENABLED,
@@ -3490,6 +4330,14 @@ def build_admin_state(group_id: int | None = None) -> dict[str, Any]:
             "context_summary_max": CONTEXT_SUMMARY_MAX,
             "context_summarize_enabled": CONTEXT_SUMMARIZE_ENABLED,
             "max_reply_chars": MAX_REPLY_CHARS,
+        },
+        "proactive": {
+            "enabled": PROACTIVE_ENABLED,
+            "selected_group_id": selected_group_id,
+            "selected_group": selected_proactive,
+            "score_model": selected_proactive.get("score_model", {}),
+            "limits": selected_proactive.get("limits", {}),
+            "content_hidden": True,
         },
         "groups": group_states,
         "reply_errors": reply_errors,
@@ -3695,7 +4543,15 @@ def select_proactive_route_action(event: dict[str, Any]) -> dict[str, Any]:
     )
 
 
-def select_direct_route_action(event: dict[str, Any], user_text: str, media_context: str = "") -> dict[str, Any]:
+def select_direct_route_action(
+    event: dict[str, Any],
+    user_text: str,
+    media_context: str = "",
+    *,
+    ocr_task: asyncio.Task | None = None,
+    base_context_text: str = "",
+    message_identity: dict[str, str] | None = None,
+) -> dict[str, Any]:
     return handlers.direct_action_for_event(
         event,
         user_text=user_text,
@@ -3709,6 +4565,9 @@ def select_direct_route_action(event: dict[str, Any], user_text: str, media_cont
         enqueue_reply_intent_fn=enqueue_reply_intent,
         log_fn=log,
         media_context=media_context,
+        ocr_task=ocr_task,
+        base_context_text=base_context_text,
+        message_identity=message_identity,
     )
 
 
@@ -3784,16 +4643,20 @@ async def onebot_event(req: Request) -> dict[str, Any]:
         return action
 
     user_text = handlers.prepare_direct_user_text(message_to_text(event.get("message")))
-    media_data = await recognize_media_for_event(event, route="direct")
-    media_context = str(media_data.get("media_context") or "（当前消息没有图片识别结果）")
     base_context_text = message_to_text(event.get("message"), include_at=False) or "（非文本消息）"
-    remember_message(
+    message_identity = message_identity_from_event(event)
+    remember_message(event, base_context_text)
+    ocr_task = schedule_direct_ocr_for_event(event, base_text=base_context_text, identity=message_identity)
+    action = select_direct_route_action(
         event,
-        ocr_context_text(base_context_text, media_context),
-        text_without_ocr=base_context_text,
-        ocr_text_nonpersistent=OCR_INCLUDE_IN_CONTEXT and not OCR_PERSIST_TEXT_IN_CONTEXT,
+        user_text,
+        "（当前消息没有图片识别结果）",
+        ocr_task=ocr_task,
+        base_context_text=base_context_text,
+        message_identity=message_identity,
     )
-    action = select_direct_route_action(event, user_text, media_context)
+    if action.get("kind") != "process_reply_intent" and ocr_task is not None and not ocr_task.done():
+        ocr_task.cancel()
     if action.get("kind") == "process_reply_intent":
         increment_runtime_counter("direct_requests")
         runtime_route_decision("direct", interaction_id=interaction_id, group_id=event.get("group_id"), user_hash=runtime_user_hash(event.get("user_id")), trigger=(action.get("intent") or {}).get("trigger", "at"), queued=True, duration_ms=runtime_elapsed_ms(request_start))

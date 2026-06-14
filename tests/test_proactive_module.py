@@ -21,7 +21,7 @@ def test_proactive_message_score_collects_name_topic_question_and_media_reasons(
     assert reasons == ["message", "name:esti", "topic:论文", "question", "open_question", "media"]
 
 
-def test_update_score_core_applies_burst_multi_user_night_and_threshold():
+def test_update_score_core_uses_bounded_heat_and_night_scaling():
     state = {"score": 1.0, "last_decay_at": 100.0}
     result = proactive.update_score_core(
         state,
@@ -39,9 +39,12 @@ def test_update_score_core_applies_burst_multi_user_night_and_threshold():
         threshold=6.0,
     )
 
-    assert result["score"] == 1.0 + (2.0 + 4.0 + 5.0) * 0.5
+    assert round(result["score"], 2) == 26.17
+    assert state["score"] == result["score"]
+    assert result["heat"] > 0
+    assert result["opening_score"] == 0.0
     assert result["should_trigger"] is True
-    assert result["reasons"] == ["message", "burst", "multi_user", "night_scaled"]
+    assert result["reasons"] == ["message", "heat:activity", "heat:back_and_forth", "night_scaled"]
     assert result["threshold"] == 6.0
 
 

@@ -63,6 +63,13 @@ class Config:
     hermes_fallback_provider: str
     hermes_fallback_provider_base_url: str
     hermes_fallback_api_key_env: str
+    direct_fast_model_alias: str
+    direct_strong_model_alias: str
+    direct_chat_model_provider: str
+    direct_chat_model_base_url: str
+    direct_chat_model_api_key_env: str
+    direct_model_timeout_seconds: int
+    direct_max_output_chars: int
     hermes_model_by_group: dict[int, str]
     hermes_provider_by_group: dict[int, str]
     hermes_group_sessions_enabled: bool
@@ -73,6 +80,8 @@ class Config:
     hermes_session_compact_summary_chars: int
     reply_prefix: str
     max_prompt_chars: int
+    direct_prompt_profile: str
+    direct_prompt_total_budget_chars: int
     hermes_timeout: int
     min_seconds_between_replies: float
     context_max_messages: int
@@ -89,6 +98,7 @@ class Config:
     user_cooldown_seconds: float
     max_pending_replies: int
     max_pending_direct_replies: int
+    direct_coalesce_window_ms: int
     max_reply_chars: int
     punctuation_style_enabled: bool
     skip_unclear_mentions: bool
@@ -105,6 +115,7 @@ class Config:
     ocr_provider_timeout: float
     ocr_max_result_chars: int
     ocr_include_in_prompt: bool
+    ocr_direct_prompt_wait_ms: int
     ocr_include_in_context: bool
     ocr_persist_text_in_context: bool
     ocr_log_text: bool
@@ -166,6 +177,7 @@ class Config:
     proactive_daily_limit_per_group: int
     proactive_rate_limit_window_seconds: float
     proactive_rate_limit_max_replies: int
+    proactive_queue_max_age_seconds: float
     proactive_context_focus_messages: int
     proactive_context_memory_messages: int
     proactive_burst_window_seconds: float
@@ -275,6 +287,14 @@ def load_config(base_dir: Path | None = None) -> Config:
     hermes_fallback_provider = _env_first("VICE_CHAT_MODEL_PROVIDER", "HERMES_FALLBACK_PROVIDER", default=config_utils.DEFAULT_FALLBACK_CHAT_PROVIDER)
     hermes_fallback_provider_base_url = _env_first(*config_utils.FALLBACK_CHAT_PROVIDER_URL_ENV_NAMES)
     hermes_fallback_api_key_env = config_utils.api_key_env_name_from_groups(config_utils.FALLBACK_CHAT_API_KEY_ENV_GROUPS)
+    direct_fast_model_alias = _env_first("DIRECT_FAST_MODEL_ALIAS", default="")
+    direct_strong_model_alias = _env_first("DIRECT_STRONG_MODEL_ALIAS", default="")
+    direct_chat_model_provider = _env_first("DIRECT_CHAT_MODEL_PROVIDER", default="")
+    direct_chat_model_base_url = _env_first("DIRECT_CHAT_MODEL_URL", "DIRECT_CHAT_MODEL_BASE_URL")
+    direct_chat_model_api_key_env = _api_key_env_name(
+        explicit_names=("DIRECT_CHAT_MODEL_API_KEY_ENV",),
+        raw_names=("DIRECT_CHAT_MODEL_API_KEY", "DIRECT_CHAT_MODEL_API"),
+    )
     hermes_model_by_group = config_utils.parse_group_str_map(os.getenv("HERMES_MODEL_BY_GROUP", ""))
     hermes_provider_by_group = config_utils.parse_group_str_map(os.getenv("HERMES_PROVIDER_BY_GROUP", ""))
     hermes_group_sessions_enabled = _bool_env("HERMES_GROUP_SESSIONS_ENABLED", "true")
@@ -285,7 +305,12 @@ def load_config(base_dir: Path | None = None) -> Config:
     hermes_session_compact_summary_chars = int(os.getenv("HERMES_SESSION_COMPACT_SUMMARY_CHARS", "1200"))
     reply_prefix = os.getenv("REPLY_PREFIX", "").strip()
     max_prompt_chars = int(os.getenv("MAX_PROMPT_CHARS", "3500"))
+    direct_prompt_profile = os.getenv("DIRECT_PROMPT_PROFILE", "fast").strip().lower()
+    if direct_prompt_profile not in {"rich", "fast", "auto"}:
+        direct_prompt_profile = "rich"
+    direct_prompt_total_budget_chars = max(0, int(os.getenv("DIRECT_PROMPT_TOTAL_BUDGET_CHARS", "6500")))
     hermes_timeout = int(os.getenv("HERMES_TIMEOUT", "180"))
+    direct_model_timeout_seconds = max(0, int(os.getenv("DIRECT_MODEL_TIMEOUT_SECONDS", "0")))
     min_seconds_between_replies = float(os.getenv("MIN_SECONDS_BETWEEN_REPLIES", "2"))
     context_max_messages = int(os.getenv("CONTEXT_MAX_MESSAGES", "20"))
     context_summary_max = int(os.getenv("CONTEXT_SUMMARY_MAX", "30"))
@@ -301,7 +326,9 @@ def load_config(base_dir: Path | None = None) -> Config:
     user_cooldown_seconds = float(os.getenv("USER_COOLDOWN_SECONDS", "20"))
     max_pending_replies = int(os.getenv("MAX_PENDING_REPLIES", "3"))
     max_pending_direct_replies = int(os.getenv("MAX_PENDING_DIRECT_REPLIES", str(max(20, max_pending_replies))))
+    direct_coalesce_window_ms = max(0, int(os.getenv("DIRECT_COALESCE_WINDOW_MS", "0")))
     max_reply_chars = int(os.getenv("MAX_REPLY_CHARS", "450"))
+    direct_max_output_chars = max(0, int(os.getenv("DIRECT_MAX_OUTPUT_CHARS", "0")))
     punctuation_style_enabled = _bool_env("PUNCTUATION_STYLE_ENABLED", "false")
     skip_unclear_mentions = os.getenv("SKIP_UNCLEAR_MENTIONS", "true").lower() not in {"0", "false", "no"}
     context_persist_enabled = _bool_env("CONTEXT_PERSIST_ENABLED", "false")
@@ -317,6 +344,7 @@ def load_config(base_dir: Path | None = None) -> Config:
     ocr_provider_timeout = float(os.getenv("OCR_PROVIDER_TIMEOUT", "30"))
     ocr_max_result_chars = int(os.getenv("OCR_MAX_RESULT_CHARS", "800"))
     ocr_include_in_prompt = config_utils.parse_bool(os.getenv("OCR_INCLUDE_IN_PROMPT", "true"))
+    ocr_direct_prompt_wait_ms = max(0, int(os.getenv("OCR_DIRECT_PROMPT_WAIT_MS", "1200")))
     ocr_include_in_context = config_utils.parse_bool(os.getenv("OCR_INCLUDE_IN_CONTEXT", "true"))
     ocr_persist_text_in_context = config_utils.parse_bool(os.getenv("OCR_PERSIST_TEXT_IN_CONTEXT", "false"))
     ocr_log_text = config_utils.parse_bool(os.getenv("OCR_LOG_TEXT", "false"))
@@ -389,16 +417,17 @@ def load_config(base_dir: Path | None = None) -> Config:
     jrrp_state_file = Path(os.getenv("JRRP_STATE_FILE", str(log_dir / "jrrp_state.json")))
     jrrp_results_file = Path(os.getenv("JRRP_RESULTS_FILE", str(resolved_base_dir / "jrrp_results.json")))
     proactive_enabled = _bool_env("PROACTIVE_ENABLED", "true")
-    proactive_trigger_threshold = float(os.getenv("PROACTIVE_TRIGGER_THRESHOLD", "16"))
+    proactive_trigger_threshold = float(os.getenv("PROACTIVE_TRIGGER_THRESHOLD", "70"))
     proactive_trigger_thresholds_by_group = parse_group_float_map(os.getenv("PROACTIVE_TRIGGER_THRESHOLDS_BY_GROUP", ""))
     proactive_group_cooldown_seconds = float(os.getenv("PROACTIVE_GROUP_COOLDOWN_SECONDS", "900"))
     proactive_decay_per_minute = float(os.getenv("PROACTIVE_DECAY_PER_MINUTE", "1"))
     proactive_daily_limit_per_group = int(os.getenv("PROACTIVE_DAILY_LIMIT_PER_GROUP", "8"))
     proactive_rate_limit_window_seconds = float(os.getenv("PROACTIVE_RATE_LIMIT_WINDOW_SECONDS", "60"))
     proactive_rate_limit_max_replies = int(os.getenv("PROACTIVE_RATE_LIMIT_MAX_REPLIES", "6"))
+    proactive_queue_max_age_seconds = float(os.getenv("PROACTIVE_QUEUE_MAX_AGE_SECONDS", "45"))
     proactive_context_focus_messages = int(os.getenv("PROACTIVE_CONTEXT_FOCUS_MESSAGES", "3"))
     proactive_context_memory_messages = int(os.getenv("PROACTIVE_CONTEXT_MEMORY_MESSAGES", "8"))
-    proactive_burst_window_seconds = float(os.getenv("PROACTIVE_BURST_WINDOW_SECONDS", "120"))
+    proactive_burst_window_seconds = float(os.getenv("PROACTIVE_BURST_WINDOW_SECONDS", "20"))
     proactive_burst_message_threshold = int(os.getenv("PROACTIVE_BURST_MESSAGE_THRESHOLD", "6"))
     proactive_burst_user_threshold = int(os.getenv("PROACTIVE_BURST_USER_THRESHOLD", "3"))
     proactive_name_triggers = env_list("PROACTIVE_NAME_TRIGGERS", "Esti,Estilord,Esti1ord,机器人,bot,小E")
@@ -443,6 +472,13 @@ def load_config(base_dir: Path | None = None) -> Config:
         hermes_fallback_provider=hermes_fallback_provider,
         hermes_fallback_provider_base_url=hermes_fallback_provider_base_url,
         hermes_fallback_api_key_env=hermes_fallback_api_key_env,
+        direct_fast_model_alias=direct_fast_model_alias,
+        direct_strong_model_alias=direct_strong_model_alias,
+        direct_chat_model_provider=direct_chat_model_provider,
+        direct_chat_model_base_url=direct_chat_model_base_url,
+        direct_chat_model_api_key_env=direct_chat_model_api_key_env,
+        direct_model_timeout_seconds=direct_model_timeout_seconds,
+        direct_max_output_chars=direct_max_output_chars,
         hermes_model_by_group=hermes_model_by_group,
         hermes_provider_by_group=hermes_provider_by_group,
         hermes_group_sessions_enabled=hermes_group_sessions_enabled,
@@ -453,6 +489,8 @@ def load_config(base_dir: Path | None = None) -> Config:
         hermes_session_compact_summary_chars=hermes_session_compact_summary_chars,
         reply_prefix=reply_prefix,
         max_prompt_chars=max_prompt_chars,
+        direct_prompt_profile=direct_prompt_profile,
+        direct_prompt_total_budget_chars=direct_prompt_total_budget_chars,
         hermes_timeout=hermes_timeout,
         min_seconds_between_replies=min_seconds_between_replies,
         context_max_messages=context_max_messages,
@@ -469,6 +507,7 @@ def load_config(base_dir: Path | None = None) -> Config:
         user_cooldown_seconds=user_cooldown_seconds,
         max_pending_replies=max_pending_replies,
         max_pending_direct_replies=max_pending_direct_replies,
+        direct_coalesce_window_ms=direct_coalesce_window_ms,
         max_reply_chars=max_reply_chars,
         punctuation_style_enabled=punctuation_style_enabled,
         skip_unclear_mentions=skip_unclear_mentions,
@@ -485,6 +524,7 @@ def load_config(base_dir: Path | None = None) -> Config:
         ocr_provider_timeout=ocr_provider_timeout,
         ocr_max_result_chars=ocr_max_result_chars,
         ocr_include_in_prompt=ocr_include_in_prompt,
+        ocr_direct_prompt_wait_ms=ocr_direct_prompt_wait_ms,
         ocr_include_in_context=ocr_include_in_context,
         ocr_persist_text_in_context=ocr_persist_text_in_context,
         ocr_log_text=ocr_log_text,
@@ -546,6 +586,7 @@ def load_config(base_dir: Path | None = None) -> Config:
         proactive_daily_limit_per_group=proactive_daily_limit_per_group,
         proactive_rate_limit_window_seconds=proactive_rate_limit_window_seconds,
         proactive_rate_limit_max_replies=proactive_rate_limit_max_replies,
+        proactive_queue_max_age_seconds=proactive_queue_max_age_seconds,
         proactive_context_focus_messages=proactive_context_focus_messages,
         proactive_context_memory_messages=proactive_context_memory_messages,
         proactive_burst_window_seconds=proactive_burst_window_seconds,

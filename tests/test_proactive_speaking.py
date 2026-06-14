@@ -27,14 +27,14 @@ def make_event(group_id=975805598, user_id=111, nickname="群友", text="消息"
 
 def configure_proactive(bridge):
     bridge.PROACTIVE_ENABLED = True
-    bridge.PROACTIVE_TRIGGER_THRESHOLD = 16.0
+    bridge.PROACTIVE_TRIGGER_THRESHOLD = 70.0
     bridge.PROACTIVE_TRIGGER_THRESHOLDS_BY_GROUP = {}
     bridge.PROACTIVE_GROUP_COOLDOWN_SECONDS = 900.0
     bridge.PROACTIVE_DAILY_LIMIT_PER_GROUP = 8
     bridge.PROACTIVE_RATE_LIMIT_WINDOW_SECONDS = 60.0
     bridge.PROACTIVE_RATE_LIMIT_MAX_REPLIES = 6
     bridge.PROACTIVE_DECAY_PER_MINUTE = 1.0
-    bridge.PROACTIVE_BURST_WINDOW_SECONDS = 120.0
+    bridge.PROACTIVE_BURST_WINDOW_SECONDS = 20.0
     bridge.PROACTIVE_BURST_MESSAGE_THRESHOLD = 6
     bridge.PROACTIVE_BURST_USER_THRESHOLD = 3
     bridge.PROACTIVE_NAME_TRIGGERS = ["Esti", "estilord", "Estilord", "Esti1ord", "机器人", "bot", "小E"]
@@ -61,7 +61,7 @@ async def run_event_and_drain(bridge, request, group_id=975805598):
     return result
 
 
-def test_proactive_score_accumulates_from_topic_burst_question_and_multi_users():
+def test_proactive_bounded_heat_triggers_from_topic_opening_and_multi_users():
     bridge = load_bridge_module()
     configure_proactive(bridge)
 
@@ -70,22 +70,25 @@ def test_proactive_score_accumulates_from_topic_burst_question_and_multi_users()
         make_event(user_id=2, nickname="乙", text="笑死我也"),
         make_event(user_id=3, nickname="丙", text="有没有人救一下"),
         make_event(user_id=4, nickname="丁", text="这群怎么回事"),
+        make_event(user_id=5, nickname="戊", text="还有人知道吗"),
     ]
     all_reasons = []
     result = None
     for i, event in enumerate(events):
-        result = bridge.update_proactive_score(event, now=1000 + i * 10)
+        result = bridge.update_proactive_score(event, now=1000 + i * 5)
         all_reasons.extend(result["reasons"])
 
     assert result["score"] >= bridge.PROACTIVE_TRIGGER_THRESHOLD
+    assert 0.0 <= result["score"] <= 100.0
     assert result["should_trigger"] is True
     assert "topic:精神状态" in all_reasons
     assert "light:笑死" in all_reasons
     assert "open_question" in all_reasons
-    assert "multi_user" in all_reasons
+    assert "heat:hot_chat" in all_reasons
+    assert "opening:open_question" in all_reasons
 
 
-def test_proactive_score_decays_over_time_and_is_group_scoped():
+def test_proactive_score_uses_sliding_window_and_is_group_scoped():
     bridge = load_bridge_module()
     configure_proactive(bridge)
 
@@ -102,16 +105,21 @@ def test_proactive_trigger_blocked_by_cooldown_only():
     bridge = load_bridge_module()
     configure_proactive(bridge)
     bridge.PROACTIVE_GROUP_COOLDOWN_SECONDS = 20.0
+    events = [
+        make_event(user_id=1, text="00年成都男，可以找到有深圳房子的本地人吗"),
+        make_event(user_id=2, text="00港大男，可以找到六段实习吗"),
+        make_event(user_id=3, text="00江西男，可以找到0彩礼小仙女吗"),
+    ]
     state = bridge.proactive_state_for_group(975805598)
-    state["score"] = 100.0
     state["last_proactive_at"] = 1000.0
 
-    event = make_event(text="机器人怎么不说话")
-    result = bridge.update_proactive_score(event, now=1019.0)
+    result = None
+    for i, event in enumerate(events):
+        result = bridge.update_proactive_score(event, now=1010.0 + i * 4)
     assert result["should_trigger"] is False
     assert result["blocked"] == "group_cooldown"
 
-    result = bridge.update_proactive_score(event, now=1020.1)
+    result = bridge.update_proactive_score(make_event(user_id=4, text="00广深AI男，可以找到不骂我的群友吗"), now=1020.1)
     assert result["blocked"] == ""
     assert result["should_trigger"] is True
 
@@ -162,7 +170,8 @@ def test_proactive_prompt_is_separate_and_context_first():
     assert "这不是被 @ 回复" in prompt
     assert prompt.index("群聊近况摘要") < prompt.index("群聊上下文") < prompt.index("基础人设与群聊提示词")
     assert "今天群里全员低电量" in prompt
-    assert "如果不适合插话或实在没话接就保持沉默" in prompt
+    assert "没有自然插入点时也按输出要求保持沉默" in prompt
+    assert "不要因为已经触发热度阈值而硬说" in prompt
     assert "如果不发言，只输出 <SILENT>" in prompt
 
 
@@ -186,7 +195,7 @@ def test_proactive_prompt_logs_section_diagnostics(monkeypatch):
     assert record["truncated_sections"] == ["summary_context"]
     summary = next(section for section in record["sections"] if section["key"] == "summary_context")
     recent = next(section for section in record["sections"] if section["key"] == "recent_context")
-    assert summary["budget_chars"] == 600
+    assert summary["budget_chars"] == 350
     assert summary["truncated"] is True
     assert recent["priority"] == "critical"
     assert recent["truncated"] is False
@@ -214,10 +223,12 @@ def test_proactive_context_decay_prioritizes_recent_human_messages():
     assert "精神状态这个梗我刚才接过了" not in context
     assert context.index("高权重：最近群友消息") < context.index("低权重：较早上下文")
     assert "高权重最近群友消息" in prompt
-    assert "触发原因只是内部诊断" in prompt
+    assert "触发原因只是内部诊断和候选信号" in prompt
+    assert "已经进入主动发言生成" in prompt
     assert "主体不确定就用“当事人/楼上/这波”泛称" in prompt
     assert "低权重旧消息和近况摘要只作背景" in prompt
     assert "只能重复旧关键词、旧梗或 Esti 之前的说法" in prompt
+    assert "必须先调用 any-search-skill" in prompt
     assert "<SILENT>" in prompt
 
 
@@ -261,6 +272,47 @@ def test_non_at_group_message_can_trigger_proactive_reply(monkeypatch):
     context = bridge.format_recent_context(975805598)
     assert "发言人：Esti（QQ: 3975680980，机器人）" in context
     assert "内容：这群今天像集体低电量。" in context
+
+
+def test_proactive_uses_generic_hermes_when_direct_only_knobs_are_set(monkeypatch):
+    bridge = load_bridge_module()
+    configure_proactive(bridge)
+    bridge.PROACTIVE_TRIGGER_THRESHOLD = 1.0
+    bridge.MIN_SECONDS_BETWEEN_REPLIES = 0.0
+    bridge.DIRECT_FAST_MODEL_ALIAS = "direct-fast-test"
+    bridge.DIRECT_STRONG_MODEL_ALIAS = "direct-strong-test"
+    bridge.DIRECT_CHAT_MODEL_PROVIDER = "custom"
+    bridge.DIRECT_CHAT_MODEL_BASE_URL = "configured-direct-base-url"
+    bridge.DIRECT_CHAT_MODEL_API_KEY_ENV = "DIRECT_TEST_KEY"
+    bridge.DIRECT_MODEL_TIMEOUT_SECONDS = 3
+    bridge.DIRECT_MAX_OUTPUT_CHARS = 24
+    sent = []
+    hermes_calls = []
+
+    def fake_run_hermes_raw(prompt, group_id=None, use_group_session=True, purpose="unknown"):
+        hermes_calls.append({"group_id": group_id, "use_group_session": use_group_session, "purpose": purpose})
+        return "这群今天像集体低电量。"
+
+    def fail_direct(*args, **kwargs):
+        raise AssertionError("proactive must not use direct generation")
+
+    async def fake_send(group_id, message):
+        sent.append((group_id, message))
+        return {"ok": True, "status": "ok"}
+
+    monkeypatch.setattr(bridge, "run_hermes_raw", fake_run_hermes_raw)
+    monkeypatch.setattr(bridge, "run_direct_hermes_raw", fail_direct)
+    monkeypatch.setattr(bridge, "send_group_msg", fake_send)
+
+    class FakeRequest:
+        async def json(self):
+            return make_event(text="精神状态不太行")
+
+    result = asyncio.run(run_event_and_drain(bridge, FakeRequest()))
+
+    assert result["queued"] is True
+    assert sent == [(975805598, "这群今天像集体低电量。")]
+    assert hermes_calls == [{"group_id": 975805598, "use_group_session": False, "purpose": "proactive_reply"}]
 
 
 def test_duplicate_onebot_events_do_not_send_duplicate_proactive_replies(monkeypatch):
@@ -399,17 +451,22 @@ def test_proactive_rate_limit_allows_at_most_six_replies_per_minute():
     bridge = load_bridge_module()
     configure_proactive(bridge)
     bridge.PROACTIVE_GROUP_COOLDOWN_SECONDS = 0.0
-    state = bridge.proactive_state_for_group(975805598)
     for i in range(6):
         assert bridge.can_send_proactive_now(975805598, now=1000.0 + i * 5) == ""
         bridge.mark_proactive_replied(975805598, now=1000.0 + i * 5)
-        state["score"] = 100.0
 
-    result = bridge.update_proactive_score(make_event(text="精神状态"), now=1030.0)
+    result = bridge.update_proactive_score(make_event(user_id=1, text="00年成都男，可以找到有深圳房子的本地人吗"), now=1030.0)
     assert result["should_trigger"] is False
     assert result["blocked"] == "rate_limit"
 
-    result = bridge.update_proactive_score(make_event(text="精神状态"), now=1061.0)
+    events = [
+        make_event(user_id=2, text="00港大男，可以找到六段实习吗"),
+        make_event(user_id=3, text="00江西男，可以找到0彩礼小仙女吗"),
+        make_event(user_id=4, text="00年AI男，可以找到不骂我的群友吗"),
+    ]
+    result = None
+    for i, event in enumerate(events):
+        result = bridge.update_proactive_score(event, now=1061.0 + i * 4)
     assert result["blocked"] == ""
     assert result["should_trigger"] is True
 
@@ -642,6 +699,34 @@ def test_queued_proactive_revalidates_cooldown_before_generation(monkeypatch):
     assert result["blocked"] == "group_cooldown"
 
 
+def test_queued_proactive_revalidates_sliding_window_before_generation(monkeypatch):
+    bridge = load_bridge_module()
+    configure_proactive(bridge)
+    bridge.PROACTIVE_GROUP_COOLDOWN_SECONDS = 0.0
+    bridge.MIN_SECONDS_BETWEEN_REPLIES = 0.0
+    events = [
+        make_event(user_id=1, text="今天精神状态不太行"),
+        make_event(user_id=2, text="笑死我也"),
+        make_event(user_id=3, text="有没有人救一下"),
+        make_event(user_id=4, text="这群怎么回事"),
+        make_event(user_id=5, text="还有人知道吗"),
+    ]
+    queued_proactive = None
+    for i, event in enumerate(events):
+        queued_proactive = bridge.update_proactive_score(event, now=1000.0 + i * 4)
+    assert queued_proactive["should_trigger"] is True
+
+    monkeypatch.setattr(bridge.time, "time", lambda: 1040.0)
+    monkeypatch.setattr(bridge, "run_proactive_reply", lambda event, reasons: (_ for _ in ()).throw(AssertionError("stale proactive intent must not generate")))
+
+    result = asyncio.run(bridge.process_proactive_reply_intent(
+        975805598,
+        {"kind": "proactive", "event": events[-1], "proactive": queued_proactive},
+    ))
+
+    assert result["ignored"] == "proactive_revalidated_score_low"
+    assert result["score"] < bridge.PROACTIVE_TRIGGER_THRESHOLD
+
 def test_proactive_trigger_with_fallback_output_does_not_send(monkeypatch):
     bridge = load_bridge_module()
     configure_proactive(bridge)
@@ -680,23 +765,38 @@ def test_proactive_prompt_allows_silence_or_natural_new_topic_not_fallback():
     assert "空输出是正确的" not in prompt
     assert "不要解释沉默原因或输出规则" in prompt
     assert "可以自然开一个很轻的小话题" in prompt
+    assert "触发信号只代表候选热度" in prompt
+    assert "主动判断话题插入性" in prompt
+    assert "工具不可用、失败或结果不足" in prompt
+    assert "否则保持沉默" in prompt
 
 def test_group_specific_proactive_threshold_overrides_global_threshold():
     bridge = load_bridge_module()
     configure_proactive(bridge)
-    bridge.PROACTIVE_TRIGGER_THRESHOLD = 16.0
-    bridge.PROACTIVE_TRIGGER_THRESHOLDS_BY_GROUP = {781423661: 999.0, 975805598: 16.0}
+    bridge.PROACTIVE_TRIGGER_THRESHOLD = 70.0
+    bridge.PROACTIVE_TRIGGER_THRESHOLDS_BY_GROUP = {781423661: 999.0, 975805598: 70.0}
     bridge.PROACTIVE_GROUP_COOLDOWN_SECONDS = 0.0
 
-    low_score = 20.0
-    bridge.proactive_state_for_group(781423661)["score"] = low_score
-    hang = bridge.update_proactive_score(make_event(group_id=781423661, text="普通消息"), now=1000.0)
+    hang_events = [
+        make_event(group_id=781423661, user_id=1, text="00年成都男，可以找到有深圳房子的本地人吗"),
+        make_event(group_id=781423661, user_id=2, text="00港大男，可以找到六段实习吗"),
+        make_event(group_id=781423661, user_id=3, text="00江西男，可以找到0彩礼小仙女吗"),
+    ]
+    hang = None
+    for i, event in enumerate(hang_events):
+        hang = bridge.update_proactive_score(event, now=1000.0 + i * 5)
     assert hang["score"] < 999.0
     assert hang["should_trigger"] is False
 
-    bridge.proactive_state_for_group(975805598)["score"] = low_score
-    ning = bridge.update_proactive_score(make_event(group_id=975805598, text="普通消息"), now=1000.0)
-    assert ning["score"] >= 16.0
+    ning_events = [
+        make_event(group_id=975805598, user_id=1, text="00年成都男，可以找到有深圳房子的本地人吗"),
+        make_event(group_id=975805598, user_id=2, text="00港大男，可以找到六段实习吗"),
+        make_event(group_id=975805598, user_id=3, text="00江西男，可以找到0彩礼小仙女吗"),
+    ]
+    ning = None
+    for i, event in enumerate(ning_events):
+        ning = bridge.update_proactive_score(event, now=1000.0 + i * 5)
+    assert ning["score"] >= 70.0
     assert ning["should_trigger"] is True
 
 
