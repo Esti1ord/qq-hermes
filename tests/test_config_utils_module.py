@@ -62,6 +62,41 @@ def test_load_config_includes_prometheus_flags(tmp_path, monkeypatch):
     assert loaded.prometheus_include_group_id_label is True
 
 
+def test_load_config_includes_reply_speed_knob_defaults_and_overrides(tmp_path, monkeypatch):
+    monkeypatch.setenv("GROUP_IDS", "975805598")
+    for name in (
+        "DIRECT_PROMPT_PROFILE",
+        "DIRECT_PROMPT_TOTAL_BUDGET_CHARS",
+        "OCR_DIRECT_PROMPT_WAIT_MS",
+        "PROACTIVE_QUEUE_MAX_AGE_SECONDS",
+    ):
+        monkeypatch.delenv(name, raising=False)
+
+    loaded = bridge_config.load_config(tmp_path)
+
+    assert loaded.direct_prompt_profile == "fast"
+    assert loaded.direct_prompt_total_budget_chars == 6500
+    assert loaded.ocr_direct_prompt_wait_ms == 1200
+    assert loaded.proactive_queue_max_age_seconds == 45
+
+    monkeypatch.setenv("DIRECT_PROMPT_PROFILE", "auto")
+    monkeypatch.setenv("DIRECT_PROMPT_TOTAL_BUDGET_CHARS", "4321")
+    monkeypatch.setenv("OCR_DIRECT_PROMPT_WAIT_MS", "0")
+    monkeypatch.setenv("PROACTIVE_QUEUE_MAX_AGE_SECONDS", "12.5")
+
+    loaded = bridge_config.load_config(tmp_path)
+
+    assert loaded.direct_prompt_profile == "auto"
+    assert loaded.direct_prompt_total_budget_chars == 4321
+    assert loaded.ocr_direct_prompt_wait_ms == 0
+    assert loaded.proactive_queue_max_age_seconds == 12.5
+
+    monkeypatch.setenv("DIRECT_PROMPT_PROFILE", "unsafe")
+    loaded = bridge_config.load_config(tmp_path)
+
+    assert loaded.direct_prompt_profile == "rich"
+
+
 def test_load_config_disables_punctuation_style_by_default(tmp_path, monkeypatch):
     monkeypatch.setenv("GROUP_IDS", "975805598")
     monkeypatch.delenv("PUNCTUATION_STYLE_ENABLED", raising=False)

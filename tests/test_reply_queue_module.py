@@ -24,3 +24,22 @@ def test_enqueue_dequeue_prioritizes_direct_fifo_over_proactive():
     assert reply_queue.dequeue(1, queues=queues, max_pending_replies=2, proactive_rate_limit_max_replies=2) == {"kind": "direct", "id": "d2"}
     assert reply_queue.dequeue(1, queues=queues, max_pending_replies=2, proactive_rate_limit_max_replies=2) == {"kind": "proactive", "id": "p1"}
     assert reply_queue.dequeue(1, queues=queues, max_pending_replies=2, proactive_rate_limit_max_replies=2) is None
+
+
+def test_enqueue_replaces_oldest_proactive_when_proactive_queue_is_full():
+    queues = {}
+
+    assert reply_queue.enqueue(1, {"kind": "proactive", "id": "p1"}, queues=queues, max_pending_replies=2, proactive_rate_limit_max_replies=2)["queued"] is True
+    assert reply_queue.enqueue(1, {"kind": "proactive", "id": "p2"}, queues=queues, max_pending_replies=2, proactive_rate_limit_max_replies=2)["queued"] is True
+    replaced = reply_queue.enqueue(1, {"kind": "proactive", "id": "p3"}, queues=queues, max_pending_replies=2, proactive_rate_limit_max_replies=2)
+
+    assert replaced == {
+        "queued": True,
+        "reason": "proactive_replaced_oldest",
+        "kind": "proactive",
+        "queue_size": 2,
+        "queue_limit": 2,
+        "dropped_oldest": True,
+    }
+    assert reply_queue.dequeue(1, queues=queues, max_pending_replies=2, proactive_rate_limit_max_replies=2) == {"kind": "proactive", "id": "p2"}
+    assert reply_queue.dequeue(1, queues=queues, max_pending_replies=2, proactive_rate_limit_max_replies=2) == {"kind": "proactive", "id": "p3"}

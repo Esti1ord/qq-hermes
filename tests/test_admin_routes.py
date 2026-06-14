@@ -59,6 +59,9 @@ def test_admin_html_endpoint_renders_local_page():
     assert "id=\"group-select\"" in body
     assert "/admin/state?${query}" in body
     assert "指标趋势" in body
+    assert "主动发言评分" in body
+    assert "当前窗口评分" in body
+    assert "renderProactive(state)" in body
     assert "回复错误原因" in body
     assert "id=\"reply-error-reasons\"" in body
     assert "暂无回复错误" in body
@@ -126,6 +129,20 @@ def test_admin_state_json_shape_includes_runtime_model_and_context_overview():
         "hermes_errors": 11,
         "unrelated_errors": 100,
     })
+    bridge.PROACTIVE_ENABLED = True
+    bridge.PROACTIVE_TRIGGER_THRESHOLD = 70.0
+    bridge.PROACTIVE_TRIGGER_THRESHOLDS_BY_GROUP = {group_id: 82.0}
+    bridge.PROACTIVE_BURST_WINDOW_SECONDS = 20.0
+    bridge.PROACTIVE_GROUP_COOLDOWN_SECONDS = 30.0
+    bridge.PROACTIVE_DAILY_LIMIT_PER_GROUP = 8
+    bridge.PROACTIVE_RATE_LIMIT_WINDOW_SECONDS = 60.0
+    bridge.PROACTIVE_RATE_LIMIT_MAX_REPLIES = 6
+    now = bridge.time.time()
+    bridge._recent_activity_by_group[group_id] = deque([
+        {"ts": now - 9, "user_id": 1, "text": "00年成都男，可以找到有深圳房子的本地人吗"},
+        {"ts": now - 5, "user_id": 2, "text": "00港大男，可以找到六段实习吗"},
+        {"ts": now - 1, "user_id": 3, "text": "00江西男，可以找到0彩礼小仙女吗"},
+    ])
 
     state = asyncio.run(bridge.admin_state(FakeRequest(), group_id))
 
@@ -143,6 +160,23 @@ def test_admin_state_json_shape_includes_runtime_model_and_context_overview():
     assert state["ocr"]["status"]["context_task_count"] == 1
     assert "cache_entries" in state["ocr"]["status"]
     assert state["runtime"]["counters"]["unrelated_errors"] == 100
+    assert state["proactive"]["enabled"] is True
+    assert state["proactive"]["selected_group_id"] == group_id
+    assert state["proactive"]["score_model"]["mode"] == "bounded_sliding_window"
+    assert state["proactive"]["score_model"]["scale"] == "0-100"
+    assert state["proactive"]["score_model"]["window_seconds"] == 20.0
+    assert state["proactive"]["score_model"]["threshold"] == 82.0
+    assert state["proactive"]["score_model"]["threshold_source"] == "group_override"
+    assert state["proactive"]["score_model"]["legacy_accumulation"] is False
+    selected_proactive = state["proactive"]["selected_group"]
+    assert 0.0 <= selected_proactive["current_window_score"] <= 100.0
+    assert selected_proactive["heat"] > 0
+    assert selected_proactive["opening_score"] > 0
+    assert selected_proactive["threshold"] == 82.0
+    assert selected_proactive["activity"]["message_count"] == 3
+    assert selected_proactive["activity"]["speaker_count"] == 3
+    assert selected_proactive["activity"]["content_hidden"] is True
+    assert "opening:meme_chain" in selected_proactive["reasons"]
     assert state["reply_errors"]["total"] == 28
     assert state["reply_errors"]["reasons"] == [
         {"key": "direct_generation_failures", "label": "直接回复生成失败", "count": 2},
@@ -157,12 +191,18 @@ def test_admin_state_json_shape_includes_runtime_model_and_context_overview():
     assert group["context"]["human_message_count"] == 1
     assert group["context"]["bot_message_count"] == 1
     assert group["context"]["summary_count"] == 2
+    assert group["proactive"]["current_window_score"] == selected_proactive["current_window_score"]
+    assert group["proactive"]["score_model"]["mode"] == "bounded_sliding_window"
 
     composition = state["context_composition"]
     assert composition["selected_group_id"] == group_id
+    assert composition["direct"]["profile"] == "fast"
+    assert composition["direct"]["total_budget_chars"] == 6500
     direct_sections = composition["direct"]["sections"]
     proactive_sections = composition["proactive"]["sections"]
-    assert {section["key"] for section in direct_sections} >= {"current_message", "recent_context", "persona"}
+    direct_section_keys = {section["key"] for section in direct_sections}
+    assert direct_section_keys >= {"current_message", "recent_context", "persona"}
+    assert "style_examples" not in direct_section_keys
     assert {section["key"] for section in proactive_sections} >= {"recent_context", "decision_strategy", "persona"}
     allowed_section_keys = {"key", "title", "source", "priority", "budget_chars", "summary", "metrics", "content_hidden"}
     assert all(set(section) <= allowed_section_keys for section in direct_sections + proactive_sections)
@@ -208,6 +248,11 @@ def test_admin_state_excludes_sensitive_values_and_raw_content():
         }
     ])
     bridge._context_summaries_by_group[group_id] = deque([raw_summary])
+    now = bridge.time.time()
+    bridge._recent_activity_by_group[group_id] = deque([
+        {"ts": now - 1, "user_id": 998877665544, "text": raw_chat},
+        {"ts": now - 2, "user_id": 998877665544, "text": raw_ocr},
+    ])
 
     state = asyncio.run(bridge.admin_state(FakeRequest(), group_id))
     rendered = json.dumps(state, ensure_ascii=False, sort_keys=True)

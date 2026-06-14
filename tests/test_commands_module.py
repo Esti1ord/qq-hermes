@@ -66,7 +66,9 @@ def test_build_proactive_prompt_renders_trigger_reasons_or_default():
 
     assert "你是 QQ 群友 Esti" in prompt
     assert "触发原因：burst、multi_user" in prompt
-    assert "触发原因只是内部诊断" in prompt
+    assert "触发原因只是内部诊断和候选信号" in prompt
+    assert "先判断话题插入性和自然接话点" in prompt
+    assert "必须先调用 any-search-skill" in prompt
     assert "低权重旧消息和近况摘要只作背景" in prompt
     assert "只能重复旧关键词、旧梗或 Esti 之前的说法" in prompt
     assert "群内用语与说话风格学习提示" not in prompt

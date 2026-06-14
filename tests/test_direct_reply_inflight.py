@@ -33,7 +33,14 @@ def configure_bridge(bridge):
     bridge.MIN_SECONDS_BETWEEN_REPLIES = 0.0
     bridge.USER_COOLDOWN_SECONDS = 0.0
     bridge.MAX_PENDING_DIRECT_REPLIES = 20
+    bridge.PROACTIVE_TRIGGER_THRESHOLD = 70.0
+    bridge.PROACTIVE_TRIGGER_THRESHOLDS_BY_GROUP = {}
+    bridge.PROACTIVE_GROUP_COOLDOWN_SECONDS = 900.0
     bridge.PROACTIVE_RATE_LIMIT_MAX_REPLIES = 6
+    bridge._proactive_state_by_group.clear()
+    bridge._recent_activity_by_group.clear()
+    if hasattr(bridge, "_proactive_reply_times_by_group"):
+        bridge._proactive_reply_times_by_group.clear()
     bridge._recent_messages_by_group.clear()
     bridge._last_user_reply_at.clear()
     bridge._recent_messages.clear()
@@ -381,6 +388,7 @@ def test_direct_priority_drains_before_proactive_backlog(monkeypatch):
     configure_bridge(bridge)
     sent = []
 
+    bridge.PROACTIVE_TRIGGER_THRESHOLD = 0.0
     monkeypatch.setattr(bridge, "run_hermes_raw", lambda *args, **kwargs: "直接回答")
     monkeypatch.setattr(bridge, "run_proactive_reply", lambda event, reasons: f"主动回答 {event.get('user_id')}")
 
@@ -396,6 +404,57 @@ def test_direct_priority_drains_before_proactive_backlog(monkeypatch):
     asyncio.run(bridge.process_reply_intent(975805598, {"kind": "proactive"}))
 
     assert sent == [(975805598, "[CQ:reply,id=11]直接回答"), (975805598, "主动回答 10")]
+
+
+
+
+def test_proactive_generation_skips_when_direct_is_pending(monkeypatch):
+    bridge = load_bridge_module()
+    configure_bridge(bridge)
+    calls = []
+
+    monkeypatch.setattr(bridge, "run_proactive_reply", lambda event, reasons: calls.append((event, reasons)) or "不该生成")
+    bridge.enqueue_reply_intent(
+        975805598,
+        {"kind": "direct", "event": make_at_event(user_id=1, message_id=7101), "user_text": "Esti 直接问题", "trigger": "at"},
+    )
+    proactive_event = make_at_event(text="普通热闹话题", user_id=2, message_id=7102)
+
+    result = asyncio.run(
+        bridge.process_proactive_reply_intent(
+            975805598,
+            {"kind": "proactive", "event": proactive_event, "proactive": {"should_trigger": True, "score": 99, "reasons": ["hot"]}},
+        )
+    )
+
+    assert result["ignored"] == "direct_pending"
+    assert calls == []
+
+
+def test_proactive_generation_skips_stale_queue_item(monkeypatch):
+    bridge = load_bridge_module()
+    configure_bridge(bridge)
+    bridge.PROACTIVE_QUEUE_MAX_AGE_SECONDS = 10.0
+    calls = []
+
+    monkeypatch.setattr(bridge, "run_proactive_reply", lambda event, reasons: calls.append((event, reasons)) or "不该生成")
+    now = bridge.runtime_now()
+    event = make_at_event(text="旧主动话题", user_id=3, message_id=7103)
+
+    result = asyncio.run(
+        bridge.process_proactive_reply_intent(
+            975805598,
+            {
+                "kind": "proactive",
+                "event": event,
+                "proactive": {"should_trigger": True, "score": 99, "reasons": ["hot"]},
+                "_perf_enqueued_at": now - 11.0,
+            },
+        )
+    )
+
+    assert result["ignored"] == "stale"
+    assert calls == []
 
 
 def test_send_group_msg_rate_limited_serializes_concurrent_sends(monkeypatch):

@@ -35,6 +35,7 @@ def configure_bridge(bridge):
     bridge._ocr_result_cache.clear()
     bridge._ocr_inflight.clear()
     bridge._ocr_context_tasks.clear()
+    bridge._ocr_direct_tasks.clear()
     bridge._ocr_semaphore = None
     bridge.CONTEXT_PERSIST_ENABLED = False
     bridge._recent_messages_by_group.clear()
@@ -42,6 +43,15 @@ def configure_bridge(bridge):
     bridge._recent_messages.clear()
     bridge._processed_event_keys.clear()
     bridge._processed_event_key_set.clear()
+    bridge.PROACTIVE_TRIGGER_THRESHOLD = 70.0
+    bridge.PROACTIVE_TRIGGER_THRESHOLDS_BY_GROUP = {}
+    bridge.PROACTIVE_GROUP_COOLDOWN_SECONDS = 900.0
+    bridge._proactive_state_by_group.clear()
+    bridge._recent_activity_by_group.clear()
+    if hasattr(bridge, "_proactive_reply_times_by_group"):
+        bridge._proactive_reply_times_by_group.clear()
+    if hasattr(bridge, "_proactive_inflight_groups"):
+        bridge._proactive_inflight_groups.clear()
     bridge._reply_queue_by_group.clear()
     bridge._reply_workers_by_group.clear()
     bridge._outbound_inflight_by_group.clear()
@@ -105,6 +115,7 @@ def test_direct_image_message_adds_ocr_to_prompt_and_context(monkeypatch):
     async def run():
         result = await bridge.onebot_event(FakeRequest(make_image_at_event()))
         await bridge.wait_reply_worker(975805598)
+        await bridge.wait_ocr_direct_tasks(975805598)
         return result
 
     result = asyncio.run(run())
@@ -339,6 +350,7 @@ def test_name_reply_to_cached_image_triggers_direct_ocr(monkeypatch):
         first = await bridge.onebot_event(FakeRequest(make_image_context_event(message_id=1001, url="https://cdn.example.test/cached.png")))
         second = await bridge.onebot_event(FakeRequest(make_reply_to_image_name_event(message_id=1002, reply_to=1001)))
         await bridge.wait_reply_worker(975805598)
+        await bridge.wait_ocr_direct_tasks(975805598)
         return first, second
 
     first, second = asyncio.run(run())
@@ -354,7 +366,96 @@ def test_name_reply_to_cached_image_triggers_direct_ocr(monkeypatch):
     assert "被回复图片OCR" in recent[-2]["text"]
 
 
-def test_direct_ocr_reads_embedded_reply_image_without_recent_cache(monkeypatch):
+
+
+def test_slow_direct_ocr_does_not_block_prompt_or_later_context_update(monkeypatch):
+    bridge = load_bridge_module()
+    configure_bridge(bridge)
+    bridge.OCR_DIRECT_PROMPT_WAIT_MS = 1
+    prompts = []
+    sent = []
+    fetch_started = asyncio.Event()
+    release_fetch = asyncio.Event()
+
+    async def fake_fetch(ref, **kwargs):
+        fetch_started.set()
+        await release_fetch.wait()
+        return media_fetch.MediaFetchResult(ref=ref, status="ok", content=b"image", content_type="image/png")
+
+    monkeypatch.setattr(bridge.media_fetch, "fetch_onebot_image", fake_fetch)
+    monkeypatch.setattr(bridge, "build_ocr_provider", lambda: vision.MockVisionProvider(text="慢速OCR结果"))
+
+    def fake_run_hermes_raw(prompt, group_id=None, use_group_session=True):
+        prompts.append(prompt)
+        return "先回复"
+
+    async def fake_send(group_id, message):
+        sent.append((group_id, message))
+        return {"ok": True}
+
+    monkeypatch.setattr(bridge, "run_hermes_raw", fake_run_hermes_raw)
+    monkeypatch.setattr(bridge, "send_group_msg", fake_send)
+
+    async def run():
+        result = await bridge.onebot_event(FakeRequest(make_image_at_event(message_id=903)))
+        await fetch_started.wait()
+        await bridge.wait_reply_worker(975805598)
+        recent_before_text = list(bridge.recent_messages_for_group(975805598))[0]["text"]
+        release_fetch.set()
+        await bridge.wait_ocr_direct_tasks(975805598)
+        return result, recent_before_text, list(bridge.recent_messages_for_group(975805598))
+
+    result, recent_before_text, recent_after = asyncio.run(run())
+
+    assert result["queued"] is True
+    assert sent == [(975805598, "[CQ:reply,id=903]先回复")]
+    assert "慢速OCR结果" not in prompts[0]
+    assert "慢速OCR结果" not in recent_before_text
+    assert "慢速OCR结果" in recent_after[0]["text"]
+
+
+def test_direct_ocr_processes_multiple_images_concurrently(monkeypatch):
+    bridge = load_bridge_module()
+    configure_bridge(bridge)
+    bridge.OCR_MAX_IMAGES_PER_MESSAGE = 2
+    bridge.OCR_MAX_CONCURRENT_TASKS = 2
+    active = 0
+    max_active = 0
+    both_started = asyncio.Event()
+    release_fetch = asyncio.Event()
+
+    event = make_image_at_event(message_id=904)
+    event["message"].append({"type": "image", "data": {"file": "second.png", "url": "https://cdn.example.test/second.png"}})
+
+    async def fake_fetch(ref, **kwargs):
+        nonlocal active, max_active
+        active += 1
+        max_active = max(max_active, active)
+        if active == 2:
+            both_started.set()
+        try:
+            await release_fetch.wait()
+            return media_fetch.MediaFetchResult(ref=ref, status="ok", content=b"image", content_type="image/png")
+        finally:
+            active -= 1
+
+    monkeypatch.setattr(bridge.media_fetch, "fetch_onebot_image", fake_fetch)
+    monkeypatch.setattr(bridge, "build_ocr_provider", lambda: vision.MockVisionProvider(text="并发OCR"))
+
+    async def run():
+        task = asyncio.create_task(bridge.recognize_media_for_event(event, route="direct"))
+        await asyncio.wait_for(both_started.wait(), timeout=1)
+        release_fetch.set()
+        result = await task
+        return result
+
+    result = asyncio.run(run())
+
+    assert len(result["results"]) == 2
+    assert max_active == 2
+
+
+def test_direct_ocr_extracts_embedded_reply_image(monkeypatch):
     bridge = load_bridge_module()
     configure_bridge(bridge)
     calls = []

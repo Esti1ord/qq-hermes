@@ -1,3 +1,4 @@
+import asyncio
 import importlib.util
 from pathlib import Path
 
@@ -75,6 +76,42 @@ def test_remember_message_compresses_older_messages_into_group_summaries(monkeyp
     recent = list(bridge.recent_messages_for_group(975805598))
     assert len(recent) == 20
     assert recent[0]["text"] == "第10条"
+
+
+def test_async_remember_message_schedules_context_compaction_off_critical_path(monkeypatch):
+    bridge = load_bridge_module()
+    bridge.CONTEXT_MAX_MESSAGES = 20
+    bridge.CONTEXT_SUMMARIZE_BATCH = 5
+    bridge.CONTEXT_SUMMARY_MAX = 30
+    bridge.CONTEXT_SUMMARIZE_ENABLED = True
+    bridge.CONTEXT_PERSIST_ENABLED = False
+    bridge._context_summaries_by_group.clear()
+    bridge._recent_messages_by_group.clear()
+    bridge._context_compaction_pending_by_group.clear()
+    bridge._context_compaction_tasks_by_group.clear()
+    calls = []
+
+    def fake_summarize(group_id, messages):
+        calls.append((group_id, list(messages)))
+        return "、".join(m["text"] for m in messages)
+
+    monkeypatch.setattr(bridge, "summarize_context_messages", fake_summarize)
+
+    async def run():
+        for i in range(25):
+            bridge.remember_message(make_event(text=f"第{i}条"))
+        assert calls == []
+        assert len(bridge._context_compaction_pending_by_group[975805598]) == 1
+        recent = list(bridge.recent_messages_for_group(975805598))
+        assert len(recent) == 20
+        assert recent[0]["text"] == "第5条"
+        await bridge.wait_context_compaction_tasks(975805598)
+
+    asyncio.run(run())
+
+    assert len(calls) == 1
+    assert [m["text"] for m in calls[0][1]] == ["第0条", "第1条", "第2条", "第3条", "第4条"]
+    assert list(bridge.context_summaries_for_group(975805598)) == ["第0条、第1条、第2条、第3条、第4条"]
 
 
 def test_context_summaries_are_limited_to_30(monkeypatch):

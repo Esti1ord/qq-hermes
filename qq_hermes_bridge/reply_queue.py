@@ -56,6 +56,17 @@ def enqueue(
         max_pending_direct_replies=max_pending_direct_replies,
     )
     if len(queue) >= queue.maxlen:
+        if kind == "proactive" and queue.maxlen:
+            queue.popleft()
+            queue.append(intent)
+            return {
+                "queued": True,
+                "reason": "proactive_replaced_oldest",
+                "kind": kind,
+                "queue_size": len(queue),
+                "queue_limit": queue.maxlen,
+                "dropped_oldest": True,
+            }
         return {
             "queued": False,
             "reason": "reply_queue_full",

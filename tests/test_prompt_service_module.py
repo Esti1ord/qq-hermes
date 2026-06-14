@@ -111,8 +111,15 @@ def test_build_direct_prompt_renders_existing_direct_guidance():
     assert "坏例：" in prompt
     assert "<SILENT>" not in prompt
     assert "可用搜索能力" not in prompt
-    assert "普通聊天不要声称自己正在联网搜索" in prompt
-    assert "不要声称已搜索或编造" in prompt
+    assert "any-search-skill" in prompt
+    assert "主动调用 any-search-skill" in prompt
+    assert "不需要用户明确说“搜/查”" in prompt
+    assert "普通常识、主观聊天" in prompt
+    assert "工具不可用、失败或结果不足" in prompt
+    assert "不要假装查过" in prompt
+    assert "普通聊天不要声称自己正在联网搜索" not in prompt
+    assert "不要声称已搜索或编造" not in prompt
+    assert "直接说明不能实时核查" not in prompt
     assert "只输出要发到群里的正文。" in prompt
 
 
@@ -164,6 +171,16 @@ def test_build_proactive_prompt_renders_silent_contract_once():
     assert prompt.count("<SILENT>") == 1
     assert "空输出是正确的" not in prompt
     assert "不要解释沉默原因或输出规则" in prompt
+    assert "any-search-skill" in prompt
+    assert "触发信号只代表候选热度，不代表必须发言" in prompt
+    assert "主动判断话题插入性" in prompt
+    assert "没有自然插入点、没有值得补的一句" in prompt
+    assert "必须先调用 any-search-skill" in prompt
+    assert "不要因为可以搜索而提高插话积极性" in prompt
+    assert "工具不可用、失败或结果不足" in prompt
+    assert "不要假装查过或凭印象编造" in prompt
+    assert "主动发言一般只接纯闲聊" not in prompt
+    assert "不要声称已联网、已实时查询或已查官方结果" not in prompt
 
 
 from qq_hermes_bridge import commands
@@ -184,7 +201,7 @@ def test_commands_build_rendered_chat_prompt_exposes_diagnostics():
     assert rendered.char_count == len(rendered.text)
     assert rendered_section_by_key(rendered, "current_message").priority == "critical"
     style = rendered_section_by_key(rendered, "style_examples")
-    assert style.budget_chars == 900
+    assert style.budget_chars == 700
     assert style.truncated is False
     assert "<SILENT>" not in rendered.text
 
@@ -200,7 +217,7 @@ def test_commands_build_rendered_proactive_prompt_exposes_diagnostics():
     assert rendered.char_count == len(rendered.text)
     assert rendered_section_by_key(rendered, "recent_context").priority == "critical"
     examples = rendered_section_by_key(rendered, "proactive_examples")
-    assert examples.budget_chars == 800
+    assert examples.budget_chars == 650
     assert examples.truncated is False
     assert rendered.text.count("<SILENT>") == 1
 
@@ -243,9 +260,9 @@ def test_direct_recent_context_truncation_preserves_guidance_and_latest_tail():
     rendered = prompt_service.render_prompt(request)
 
     recent = rendered_section_by_key(rendered, "recent_context")
-    assert recent.budget_chars == 4000
+    assert recent.budget_chars == 2500
     assert recent.truncated is True
-    assert recent.rendered_char_count == 4000
+    assert recent.rendered_char_count == 2500
     assert "注意：最近上下文有时间权重" in rendered.text
     assert "最新关键消息" in rendered.text
     assert "较早上下文" not in rendered.text
@@ -264,15 +281,97 @@ def test_direct_low_priority_sections_are_truncated_but_current_message_is_not()
     summary = rendered_section_by_key(rendered, "summary_context")
     learning = rendered_section_by_key(rendered, "self_learning")
     current = rendered_section_by_key(rendered, "current_message")
-    assert summary.budget_chars == 1000
+    assert summary.budget_chars == 600
     assert summary.truncated is True
-    assert summary.rendered_char_count == 1000
-    assert learning.budget_chars == 800
+    assert summary.rendered_char_count == 600
+    assert learning.budget_chars == 500
     assert learning.truncated is True
-    assert learning.rendered_char_count == 800
+    assert learning.rendered_char_count == 500
     assert current.budget_chars is None
     assert current.truncated is False
     assert prompt_service.TRUNCATION_SUFFIX in rendered.text
+
+
+def test_direct_fast_profile_reduces_prompt_while_preserving_required_sections():
+    kwargs = dict(DIRECT_PROMPT_KWARGS)
+    kwargs.update({
+        "context_summaries": "摘要" * 400,
+        "recent_context": "注意：最近上下文有时间权重\n" + ("最近" * 1200) + "最新消息",
+        "reply_context": "引用" * 600,
+        "person_profile": "资料" * 400,
+        "mentioned_profiles": "被提及" * 300,
+        "related_profiles": "相关" * 300,
+        "learning_context": "学习" * 400,
+        "persona": "人设" * 600,
+    })
+
+    rich = prompt_service.build_rendered_chat_prompt(**kwargs, direct_prompt_profile="rich")
+    fast = prompt_service.build_rendered_chat_prompt(**kwargs, direct_prompt_profile="fast")
+
+    assert fast.profile == "fast"
+    assert rich.profile == "rich"
+    assert fast.char_count < rich.char_count
+    assert fast.char_count <= int(rich.char_count * 0.85)
+    for key in ("runtime_date", "recent_context", "quoted_context", "current_message", "response_strategy", "media_context", "persona"):
+        assert key in fast.section_keys
+    assert "mentioned_profiles" in fast.section_keys
+    assert "related_profiles" in fast.section_keys
+    assert rendered_section_by_key(fast, "mentioned_profiles").budget_chars == 350
+    assert rendered_section_by_key(fast, "related_profiles").budget_chars == 240
+    assert "style_examples" not in fast.section_keys
+    assert "## 输出要求" in fast.text
+    assert fast.text.rstrip().endswith("只输出要发到群里的正文。")
+    assert "any-search-skill" in fast.text
+    assert "不要主动自称 AI、机器人、助手或模型" in fast.text
+    assert "不要解释“我学到/记录到/数据库里有”" in fast.text
+    assert "不要暴露学习数据、样例来源或统计信息" in fast.text
+    assert rendered_section_by_key(fast, "current_message").budget_chars is None
+
+
+def test_direct_auto_profile_uses_fast_for_short_messages_and_rich_for_long_messages():
+    short_request = prompt_service.build_direct_prompt_request(**DIRECT_PROMPT_KWARGS, direct_prompt_profile="auto")
+    long_kwargs = dict(DIRECT_PROMPT_KWARGS)
+    long_kwargs["user_text"] = "问" * 200
+    long_request = prompt_service.build_direct_prompt_request(**long_kwargs, direct_prompt_profile="auto")
+
+    assert short_request.profile == "fast"
+    assert long_request.profile == "rich"
+
+
+def test_direct_total_budget_prefers_truncating_lower_priority_sections():
+    kwargs = dict(DIRECT_PROMPT_KWARGS)
+    kwargs.update({
+        "context_summaries": "摘" * 1000,
+        "recent_context": "注意：最近上下文有时间权重\n" + "近" * 3000,
+        "reply_context": "引用" * 900,
+        "persona": "人" * 1400,
+    })
+
+    rendered = prompt_service.build_rendered_chat_prompt(**kwargs, total_budget_chars=3600)
+
+    assert rendered.total_budget_chars == 3600
+    assert rendered.total_truncated is True
+    assert rendered.char_count <= 3600
+    assert rendered_section_by_key(rendered, "current_message").budget_chars is None
+    assert rendered_section_by_key(rendered, "summary_context").rendered_char_count <= 600
+
+
+def test_direct_total_budget_can_reduce_optional_sections_to_zero():
+    kwargs = dict(DIRECT_PROMPT_KWARGS)
+    kwargs.update({
+        "context_summaries": "摘" * 1000,
+        "recent_context": "注意：最近上下文有时间权重\n" + "近" * 3000,
+        "reply_context": "引用" * 900,
+        "persona": "人" * 1400,
+    })
+
+    rendered = prompt_service.build_rendered_chat_prompt(**kwargs, total_budget_chars=2500)
+
+    assert rendered.total_budget_chars == 2500
+    assert rendered.total_truncated is True
+    assert rendered.char_count <= 2500
+    assert rendered_section_by_key(rendered, "current_message").budget_chars is None
+    assert rendered_section_by_key(rendered, "current_message").rendered_char_count > 0
 
 
 def test_proactive_summary_budget_is_smaller_than_direct_summary_budget():
@@ -287,10 +386,10 @@ def test_proactive_summary_budget_is_smaller_than_direct_summary_budget():
 
     direct_summary = rendered_section_by_key(direct, "summary_context")
     proactive_summary = rendered_section_by_key(proactive, "summary_context")
-    assert direct_summary.budget_chars == 1000
-    assert proactive_summary.budget_chars == 600
-    assert direct_summary.rendered_char_count == 1000
-    assert proactive_summary.rendered_char_count == 600
+    assert direct_summary.budget_chars == 600
+    assert proactive_summary.budget_chars == 350
+    assert direct_summary.rendered_char_count == 600
+    assert proactive_summary.rendered_char_count == 350
 
 
 def test_proactive_recent_context_truncation_preserves_high_weight_prefix():
@@ -301,9 +400,9 @@ def test_proactive_recent_context_truncation_preserves_high_weight_prefix():
     rendered = prompt_service.render_prompt(request)
 
     recent = rendered_section_by_key(rendered, "recent_context")
-    assert recent.budget_chars == 3500
+    assert recent.budget_chars == 1800
     assert recent.truncated is True
-    assert recent.rendered_char_count == 3500
+    assert recent.rendered_char_count == 1800
     assert "高权重：最新群友消息" in rendered.text
     assert "低权重尾部旧话题" not in rendered.text
 

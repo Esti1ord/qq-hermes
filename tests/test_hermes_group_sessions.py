@@ -494,6 +494,51 @@ def test_run_hermes_uses_direct_http_primary_when_url_and_api_env_configured(mon
     assert any(item.get("type") == "text_http_result" for item in logs)
 
 
+def test_text_http_client_is_reused_for_direct_http_calls(monkeypatch):
+    bridge = load_bridge_module()
+    bridge.HERMES_TIMEOUT = 5
+    bridge.MAX_REPLY_CHARS = 300
+    calls = []
+
+    def fake_http(prompt, **kwargs):
+        calls.append({"prompt": prompt, **kwargs})
+        return {"ok": True, "text": "direct answer", "reason": ""}
+
+    monkeypatch.setattr(bridge.hermes_runtime, "run_openai_compatible_chat_completion", fake_http)
+
+    try:
+        first = bridge.run_text_http_result(
+            "prompt one",
+            config={
+                "model": "custom-chat-model",
+                "provider": "custom",
+                "base_url": "https://chat.example.test/v1",
+                "api_key_env": "TEXT_API_KEY",
+            },
+            group_id=781423661,
+            purpose="direct_reply",
+        )
+        second = bridge.run_text_http_result(
+            "prompt two",
+            config={
+                "model": "custom-chat-model",
+                "provider": "custom",
+                "base_url": "https://chat.example.test/v1",
+                "api_key_env": "TEXT_API_KEY",
+            },
+            group_id=781423661,
+            purpose="direct_reply",
+        )
+    finally:
+        bridge.close_text_http_client()
+
+    assert first["text"] == "direct answer"
+    assert second["text"] == "direct answer"
+    assert len(calls) == 2
+    assert calls[0]["client"] is calls[1]["client"]
+    assert calls[0]["client"].is_closed is True
+
+
 def test_run_hermes_uses_direct_http_fallback_without_group_session(monkeypatch):
     bridge = load_bridge_module()
     bridge.HERMES_BIN = "hermes"

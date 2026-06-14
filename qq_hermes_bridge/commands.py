@@ -57,6 +57,8 @@ def build_rendered_chat_prompt(
     style_hint: str,
     media_context: str = "（当前消息没有图片识别结果）",
     learning_context: str = "（暂无群内用语/风格学习提示）",
+    direct_prompt_profile: str = "rich",
+    total_budget_chars: int | None = None,
 ) -> prompt_service.RenderedPrompt:
     return prompt_service.build_rendered_chat_prompt(
         group_id=group_id,
@@ -77,6 +79,8 @@ def build_rendered_chat_prompt(
         style_hint=style_hint,
         media_context=media_context,
         learning_context=learning_context,
+        direct_prompt_profile=direct_prompt_profile,
+        total_budget_chars=total_budget_chars,
     )
 
 
@@ -100,6 +104,8 @@ def build_chat_prompt(
     style_hint: str,
     media_context: str = "（当前消息没有图片识别结果）",
     learning_context: str = "（暂无群内用语/风格学习提示）",
+    direct_prompt_profile: str = "rich",
+    total_budget_chars: int | None = None,
 ) -> str:
     return build_rendered_chat_prompt(
         group_id=group_id,
@@ -120,6 +126,8 @@ def build_chat_prompt(
         style_hint=style_hint,
         media_context=media_context,
         learning_context=learning_context,
+        direct_prompt_profile=direct_prompt_profile,
+        total_budget_chars=total_budget_chars,
     ).text
 
 
