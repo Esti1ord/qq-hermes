@@ -1,0 +1,9 @@
+{"file":".trellis/spec/backend/index.md","reason":"Backend spec index and pre-development checklist."}
+{"file":".trellis/spec/backend/directory-structure.md","reason":"Runtime module organization and bridge compatibility constraints."}
+{"file":".trellis/spec/backend/logging-guidelines.md","reason":"Content-safe runtime stats, metrics, admin state, and reply-speed observability contract."}
+{"file":".trellis/spec/backend/error-handling.md","reason":"Text provider fallback, direct failure, and secret-safe provider metadata constraints."}
+{"file":".trellis/spec/backend/quality-guidelines.md","reason":"Backend quality/testing expectations and existing command fallback constraints."}
+{"file":".trellis/spec/guides/index.md","reason":"Shared thinking guide index."}
+{"file":".trellis/spec/guides/cross-layer-thinking-guide.md","reason":"Queue/config/metrics/runtime changes span layers and need boundary checks."}
+{"file":".trellis/spec/guides/code-reuse-thinking-guide.md","reason":"Search/reuse expectations before adding config/helpers."}
+{"file":".trellis/tasks/06-14-continue-reply-speed-improvement-plan/prd.md","reason":"Task requirements and acceptance criteria for this implementation."}
